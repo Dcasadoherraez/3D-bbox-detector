@@ -1,0 +1,6 @@
+*.pth
+log/
+runs/
+kitti/*.pickle
+*/__pycache__
+
