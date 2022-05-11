@@ -2,11 +2,13 @@
 import os
 os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sensor_msgs.msg import Image, PointCloud2, PointField
-from vision_msgs.msg import BoundingBox2D, BoundingBox2DArray
 from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
+from bb_pub_node.msg import BoundingBox2D, BoundingBox2DArray
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs import point_cloud2
 import kitti.kitti_util as utils
+from kitti.kitti_object import get_lidar_in_image_fov, kitti_object
+from models.frustum_pointnets import g_type2class
 from std_msgs.msg import Header, String
 import cv2
 import rospy
@@ -114,23 +116,23 @@ class KittiPublisher:
 
         return points
 
-    def get_lidar_in_image_fov(self, pointcloud, xmin, ymin, xmax, ymax,
-                               clip_distance=2.0):
-        ''' Filter lidar points, keep those in image FOV '''
-        pc_velo = pointcloud[:, :3]
-        pts_2d = self.calib.project_velo_to_image(pc_velo)
-        fov_inds = (pts_2d[:, 0] < xmax) & (pts_2d[:, 0] >= xmin) & \
-                   (pts_2d[:, 1] < ymax) & (pts_2d[:, 1] >= ymin)
-        fov_inds = fov_inds & (pc_velo[:, 0] > clip_distance)
-        imgfov_pc_velo = pointcloud[fov_inds, :]
+    # def get_lidar_in_image_fov(self, pointcloud, xmin, ymin, xmax, ymax,
+    #                            clip_distance=2.0):
+    #     ''' Filter lidar points, keep those in image FOV '''
+    #     pc_velo = pointcloud[:, :3]
+    #     pts_2d = self.calib.project_velo_to_image(pc_velo)
+    #     fov_inds = (pts_2d[:, 0] < xmax) & (pts_2d[:, 0] >= xmin) & \
+    #                (pts_2d[:, 1] < ymax) & (pts_2d[:, 1] >= ymin)
+    #     fov_inds = fov_inds & (pc_velo[:, 0] > clip_distance)
+    #     imgfov_pc_velo = pointcloud[fov_inds, :]
 
-        return imgfov_pc_velo, pts_2d, fov_inds
+    #     return imgfov_pc_velo, pts_2d, fov_inds
 
     def pub_depth(self, image, pointcloud, timestamp):
         '''Publish lidar points in FOV'''
         h, w, _ = image.shape
-        lidar_window, _, _ = self.get_lidar_in_image_fov(
-            pointcloud, 0, 0, w, h)
+        _, _, fov_inds = get_lidar_in_image_fov(pointcloud[:, :3], self.calib, 0, 0, w, h, return_more=True)
+        lidar_window = pointcloud[fov_inds, :]
         lidar_window_msg = self.array2pc(lidar_window)
         lidar_window_msg.header.stamp = timestamp
         self.depth_pub.publish(lidar_window_msg)
@@ -172,34 +174,36 @@ class KittiPublisher:
 
                 roll, pitch, yaw = 0, 0, -obj.ry
                 qx = np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - \
-                    np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+                     np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
                 qy = np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + \
-                    np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
+                     np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
                 qz = np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - \
-                    np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
+                     np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
                 qw = np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + \
-                    np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+                     np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
 
                 bbox_3D.pose.orientation.x = qx
                 bbox_3D.pose.orientation.y = qy
                 bbox_3D.pose.orientation.z = qz
                 bbox_3D.pose.orientation.w = qw
 
-                bbox_3D.label = obj.type
+                bbox_3D.label = g_type2class[obj.type]
                 bbox_3D.value = obj.class_id
 
                 gt_bbox_array_3D.append(bbox_3D)
 
                 # 2D Bounding box
                 bbox_2D = BoundingBox2D()
-                w = obj.xmin - obj.xmax
-                h = obj.ymin - obj.ymax
+                w = obj.xmax - obj.xmin
+                h = obj.ymax - obj.ymin
 
-                bbox_2D.center.x = obj.xmin + w //2
-                bbox_2D.center.y = obj.ymin + h //2
+                bbox_2D.center.x = obj.xmin + w // 2
+                bbox_2D.center.y = obj.ymin + h // 2
                 bbox_2D.center.theta = 0
                 bbox_2D.size_x = w
                 bbox_2D.size_y = h
+
+                bbox_2D.type = obj.type
                 
                 gt_bbox_array_2D.append(bbox_2D)
 

@@ -357,12 +357,16 @@ def test_one_epoch(model, loader):
             ps_list.append(batch_data[j, ...])
             seg_list.append(batch_label[j, ...])
             segp_list.append(batch_output[j, ...])
+
+
             center_list.append(batch_center_pred[j, :])
             heading_cls_list.append(batch_hclass_pred[j])
             heading_res_list.append(batch_hres_pred[j])
             size_cls_list.append(batch_sclass_pred[j])
             size_res_list.append(batch_sres_pred[j, :])
             rot_angle_list.append(batch_rot_angle[j])
+
+
             if batch_scores[j] < -1000000000: batch_scores[j] = -1000000000
             score_list.append(batch_scores[j])
             pos_cnt += np.sum(batch_label[j, :].cpu().detach().numpy())

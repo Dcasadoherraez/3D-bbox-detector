@@ -1,23 +1,31 @@
 #!/usr/bin/env python
 import os
-
 os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sensor_msgs.msg import Image, PointCloud2, PointField
-from vision_msgs.msg import BoundingBox2DArray
-from std_msgs.msg import String
-from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
-from cv_bridge import CvBridge, CvBridgeError
-from sensor_msgs import point_cloud2
-import message_filters
-import kitti.kitti_util as utils
-from models.frustum_pointnets import FrustumPointNetv1
 
-from std_msgs.msg import Header
-import cv2
-import rospy
-import operator
-import numpy as np
 import torch
+import numpy as np
+import operator
+import rospy
+import ros_numpy
+import cv2
+from std_msgs.msg import Header
+from models.model_util import g_type2class, g_class2type, g_type2onehotclass
+from models.frustum_pointnets import FrustumPointNetv1
+import kitti.kitti_util as utils
+import message_filters
+from sensor_msgs import point_cloud2
+from cv_bridge import CvBridge, CvBridgeError
+from std_msgs.msg import String
+from sensor_msgs.msg import Image, PointCloud2, PointField
+from bb_pub_node.msg import BoundingBox2D, BoundingBox2DArray
+from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
+from calendar import c
+
+from wandb import Object3D
+
+from train.provider import class2angle, from_prediction_to_label_format
+os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 DATASET_ROOT = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training"
 IMG_TAG = "image_02"
@@ -31,33 +39,89 @@ PC_DATASET_PATH = os.path.join(DATASET_ROOT, PC_SEQUENCE)
 LABELS_PATH = os.path.join(DATASET_ROOT, "label_02", SEQ + ".txt")
 PUB_RATE = 10
 
-def softmax(x):
-    ''' Numpy function for softmax'''
-    shape = x.shape
-    probs = np.exp(x - np.max(x, axis=len(shape) - 1, keepdims=True))
-    probs /= np.sum(probs, axis=len(shape) - 1, keepdims=True)
-    return probs
 
 class KittiSubscriber:
     def __init__(self) -> None:
-        self.load_pretrained = ''
+        self.load_pretrained = "/hdd/catkin_ws/src/bb_pub_node/log/run3_carpedcyc_kitti_2022-05-05-22/acc0.641093-epoch143.pth"
         self.n_classes = 3
         self.bridge = CvBridge()
+        self.calib = utils.Calibration(SEQ_CALIB_PATH)
+
+        print('Initializing model...')
+        self.model = FrustumPointNetv1(n_classes=self.n_classes)
+        
+        if torch.cuda.is_available():
+            self.model = self.model.cuda()
+
+        # load pre-trained model
+        if self.load_pretrained:
+            print('Loading model from ', self.load_pretrained)
+            ckpt = torch.load(self.load_pretrained)
+            self.model.load_state_dict(ckpt['model_state_dict'])
+       
+        self.model.eval()
+
+        # ROS
         rospy.init_node('fpointnet_subscriber', anonymous=True)
 
+        # Publisher of the prediction result
+        self.prediction_3d = rospy.Publisher(
+            'prediction_3d_publisher', BoundingBoxArray, queue_size=1)
+
+        # Subscriber to the data stream
         ts = message_filters.TimeSynchronizer([
             message_filters.Subscriber('/image_publisher', Image),
             message_filters.Subscriber('/depth_publisher', PointCloud2),
             message_filters.Subscriber('/gt_bb_publisher_3D', BoundingBoxArray),
             message_filters.Subscriber('/gt_bb_publisher_2D', BoundingBox2DArray),
         ], queue_size=1)
-        
-        ts.registerCallback(self.detect_objects)
+
+        ts.registerCallback(self.test_from_rgb_detection)
 
         rospy.spin()
-    
-    def detect_objects(self, image, depth, gt_3d, gt_2d):
-        print('Hi')
+
+    def pub_pred_bbox(self, predictions, timestamp):
+        '''Publish predicted object bounding boxes'''
+        bbox_array_3D = BoundingBoxArray()
+        bbox_array_3D.boxes = []
+        bbox_array_3D.header = Header()
+        bbox_array_3D.header.stamp = timestamp
+        bbox_array_3D.header.frame_id = "base_link"
+
+        i = 0
+        while i < len(predictions):
+            tx, ty, tz, h, w, l, ry = predictions[i]
+
+            # 3D Bounding box
+            bbox_3D = BoundingBox()
+            bbox_3D.header.frame_id = "base_link"
+            bbox_3D.dimensions.x = w
+            bbox_3D.dimensions.y = l
+            bbox_3D.dimensions.z = h
+            bbox_3D.pose.position.x = tx
+            bbox_3D.pose.position.y = ty
+            bbox_3D.pose.position.z = tz
+
+            roll, pitch, yaw = 0, 0, ry
+            qx = np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - \
+                np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+            qy = np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + \
+                np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
+            qz = np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - \
+                np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
+            qw = np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + \
+                np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+
+            bbox_3D.pose.orientation.x = qx
+            bbox_3D.pose.orientation.y = qy
+            bbox_3D.pose.orientation.z = qz
+            bbox_3D.pose.orientation.w = qw
+
+            bbox_array_3D.boxes.append(bbox_3D)
+
+            i += 1
+
+        self.prediction_3d.publish(bbox_array_3D)
 
     def test_from_rgb_detection(self, image, depth, gt_3d_list, gt_2d_list):
         ''' Test frustum pointnets with GT 2D boxes.
@@ -76,115 +140,100 @@ class KittiSubscriber:
         batch_rot_angle:[32],
         batch_one_hot_vec:[32,3],
         '''
-
-        FrustumPointNet = FrustumPointNetv1(n_classes=self.n_classes).cuda()
-
-        # load pre-trained model
-        if self.load_pretrained:
-            ckpt = torch.load(self.load_pretrained)
-            FrustumPointNet.load_state_dict(ckpt['model_state_dict'])
-
-        batch_data, batch_label, batch_center, \
-        batch_hclass, batch_hres, \
-        batch_sclass, batch_sres, \
-        batch_rot_angle, batch_one_hot_vec = data
-
-        data_dicts = {}
-
-        bs = batch_data.shape[0]
-        
-        data_dicts['point_cloud'] = batch_data.transpose(2,1).float().cuda()
-        data_dicts['rot_angle'] = batch_rot_angle.float().cuda()
-        data_dicts['box3d_center'] = batch_center.float().cuda()
-        data_dicts['size_class'] = batch_sclass.long().cuda()
-        data_dicts['size_residual'] = batch_sres.float().cuda()
-        data_dicts['angle_class']  = batch_hclass.long().cuda()
-        data_dicts['angle_residual'] = batch_hres.float().cuda()
-        data_dicts['one_hot'] = batch_one_hot_vec.float().cuda()
-        data_dicts['seg'] = batch_label.float().cuda()
-
-        FrustumPointNet = model.eval()
-
-        logits, seg_label, box3d_center, box3d_center_label, stage1_center, \
-        heading_scores, heading_residual_normalized, heading_residual, \
-        heading_class_label, heading_residual_label, size_scores, \
-        size_residual_normalized, size_residual, size_class_label, \
-        size_residual_label = \
-            FrustumPointNet(data_dicts)
+        timestamp = image.header.stamp
+        cv_image = self.bridge.imgmsg_to_cv2(
+            image, desired_encoding='passthrough')
+        cv_image = np.asarray(cv_image)
 
 
+        bbox_2D_list = gt_2d_list.boxes
+        predictions_list = []
 
-        # Pre-trained Model
-        # pth = torch.load(model_path)
-        # FrustumPointNet.load_state_dict(pth['model_state_dict'])
+        bbox_3D_list = gt_3d_list.boxes
 
-        # 1. Load data
-        batch_data, \
-        batch_rot_angle, \
-        batch_rgb_prob, \
-        batch_one_hot_vec = data
+        for bbox_2D, bbox_3D in zip(bbox_2D_list, bbox_3D_list):
+            # Get the 3D points inside the 2D bounding box
+            xmin = int(bbox_2D.center.x - bbox_2D.size_x // 2)
+            xmax = int(bbox_2D.center.x + bbox_2D.size_x // 2)
+            ymin = int(bbox_2D.center.y - bbox_2D.size_y // 2)
+            ymax = int(bbox_2D.center.y + bbox_2D.size_y // 2)
 
-        # return point_set, rot_angle, self.prob_list[index], one_hot_vec
-        batch_data = batch_data.transpose(2, 1).float().cuda()
-        # batch_label = batch_label.float().cuda()
-        # batch_center = batch_center.float().cuda()
-        # batch_hclass = batch_hclass.float().cuda()
-        # batch_hres = batch_hres.float().cuda()
-        # batch_sclass = batch_sclass.float().cuda()
-        # batch_sres = batch_sres.float().cuda()
-        batch_rot_angle = batch_rot_angle.float().cuda()
-        batch_rgb_prob = batch_rgb_prob.float().cuda()
-        batch_one_hot_vec = batch_one_hot_vec.float().cuda()
+            # cv2.rectangle(cv_image,pt1=(xmin, ymin),pt2=(xmax, ymax),color=(0, 255, 0),thickness=3,lineType=cv2.LINE_4)
+            # cv2.imshow("test", cv_image)
+            # cv2.waitKey(0)
 
-        # 2. Eval one batch
-        model = model.eval()
-        logits, mask, stage1_center, center_boxnet, \
-        heading_scores, heading_residuals_normalized, heading_residuals, \
-        size_scores, size_residuals_normalized, size_residuals, center = \
-            model(batch_data, batch_one_hot_vec)
-        # logits:[32, 1024, 2] , mask:[32, 1024]
+            pc = ros_numpy.numpify(depth)
+            pc_3d_coord = np.zeros((pc.shape[0], 4), dtype=np.float32)
+            pc_3d_coord[:, 0] = pc['x']
+            pc_3d_coord[:, 1] = pc['y']
+            pc_3d_coord[:, 2] = pc['z']
+            pc_3d_coord[:, 3] = pc['intensity']
 
-        logits = logits.cpu().detach().numpy()
-        mask = mask.cpu().detach().numpy()
-        center_boxnet = center_boxnet.cpu().detach().numpy()
-        # stage1_center = stage1_center.cpu().detach().numpy()#
-        center = center.cpu().detach().numpy()
-        heading_scores = heading_scores.cpu().detach().numpy()
-        # heading_residuals_normalized = heading_residuals_normalized.cpu().detach().numpy()
-        heading_residuals = heading_residuals.cpu().detach().numpy()
-        size_scores = size_scores.cpu().detach().numpy()
-        size_residuals = size_residuals.cpu().detach().numpy()
-        # size_residuals_normalized = size_residuals_normalized.cpu().detach().numpy()#
-        batch_rot_angle = batch_rot_angle.cpu().detach().numpy()
+            pc_image_coord = self.calib.project_velo_to_image(
+                pc_3d_coord[:, :3])
 
-        # 5. Compute and write all Results
-        batch_output = np.argmax(logits, 2)  # mask#torch.Size([32, 1024])
-        batch_center_pred = center  # _boxnet#torch.Size([32, 3])
-        batch_hclass_pred = np.argmax(heading_scores, 1)  # (32,)
-        batch_hres_pred = np.array([heading_residuals[j, batch_hclass_pred[j]] \
-                                    for j in range(batch_data.shape[0])])  # (32,)
-        # batch_size_cls,batch_size_res
-        batch_sclass_pred = np.argmax(size_scores, 1)  # (32,)
-        batch_sres_pred = np.vstack([size_residuals[j, batch_sclass_pred[j], :] \
-                                        for j in range(batch_data.shape[0])])  # (32,3)
+            box_fov_inds = (pc_image_coord[:, 0] < xmax) & \
+                           (pc_image_coord[:, 0] >= xmin) & \
+                           (pc_image_coord[:, 1] < ymax) & \
+                           (pc_image_coord[:, 1] >= ymin)
 
-        # batch_scores
-        batch_seg_prob = softmax(logits)[:, :, 1]  # (32, 1024, 2) ->(32, 1024)
-        batch_seg_mask = np.argmax(logits, 2)  # BxN
-        mask_mean_prob = np.sum(batch_seg_prob * batch_seg_mask, 1)  # B,
-        mask_mean_prob = mask_mean_prob / np.sum(batch_seg_mask, 1)  # B,
-        heading_prob = np.max(softmax(heading_scores), 1)  # B
-        size_prob = np.max(softmax(size_scores), 1)  # B,
-        # batch_scores = np.log(mask_mean_prob) + np.log(heading_prob) + np.log(size_prob)
+            pc_in_box_fov = pc_3d_coord[box_fov_inds, :]
 
-        mask_max_prob = np.max(batch_seg_prob * batch_seg_mask, 1)
-        batch_scores = mask_max_prob
+            # one hot encoding
+            cls_type = bbox_2D.type
 
+            if cls_type not in ['Car', 'Pedestrian', 'Cyclist']:
+                continue
 
+            one_hot_vec = np.zeros((3))
+            one_hot_vec[g_type2onehotclass[cls_type]] = 1
+
+            input_data = {}
+            pc_in_box_fov = torch.tensor(
+                pc_in_box_fov, dtype=torch.float32).unsqueeze(0).transpose(2, 1).cuda()
+            one_hot_vec = torch.tensor(one_hot_vec, dtype=torch.float32).cuda()
+
+            input_data['point_cloud'] = pc_in_box_fov
+            input_data['one_hot'] = one_hot_vec
+
+            net_out = self.model(input_data)
+
+            # net_out['logits']
+            # net_out['box3d_center']
+            # net_out['stage1_center']
+            # net_out['heading_scores']
+            # net_out['heading_residual_normalized']
+            # net_out['heading_residual']
+            # net_out['size_scores']
+            # net_out['size_residual_normalized']
+            # net_out['size_residual']
+
+            # Get frustrum angle
+            box2d_center = np.array([bbox_2D.center.x, bbox_2D.center.y])
+            uvdepth = np.zeros((1, 3))
+            uvdepth[0, 0:2] = box2d_center
+            uvdepth[0, 2] = 20  # some random depth
+            box2d_center_rect = self.calib.project_image_to_rect(uvdepth)
+            frustum_angle =  -1 * np.arctan2(box2d_center_rect[0, 2], box2d_center_rect[0, 0])
+            frustum_angle += np.pi / 2.0
+            
+            center = net_out['box3d_center'].cpu().detach().numpy()[0]
+            angle_class = np.argmax(net_out['heading_scores'].cpu().detach().numpy())
+            angle_res = net_out['heading_residual'].cpu().detach().numpy()[0][angle_class]
+
+            size_class = np.argmax(net_out['size_scores'].cpu().detach().numpy())
+            size_res = net_out['size_residual'].cpu().detach().numpy()[0][size_class]
+            rot = frustum_angle
+
+            h, w, l, tx, ty, tz, ry = from_prediction_to_label_format(
+                                            center, angle_class, angle_res, 
+                                            size_class, size_res, rot)
+            predictions_list.append([bbox_3D.pose.position.x, bbox_3D.pose.position.y, bbox_3D.pose.position.z, h, w, l, -ry])
+
+        self.pub_pred_bbox(predictions_list, timestamp)
 
 
 if __name__ == '__main__':
     print("Starting frustrum pointnet subscriber node...")
 
     pub = KittiSubscriber()
- 

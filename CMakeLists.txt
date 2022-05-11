@@ -6,6 +6,20 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   vision_msgs
   ros_numpy
+  message_generation
+)
+
+add_message_files(
+  FILES
+  BoundingBox2D.msg
+  BoundingBox2DArray.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  vision_msgs
+  bb_pub_node
 )
 
 

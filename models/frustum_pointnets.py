@@ -1,3 +1,4 @@
+from cmath import log
 import sys
 import os
 os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -190,35 +191,29 @@ class STNxyz(nn.Module):
 class FrustumPointNetv1(nn.Module):
     def __init__(self,n_classes=3,n_channel=3):
         super(FrustumPointNetv1, self).__init__()
+        print('Using FrustumPointNetv1')
         self.n_classes = n_classes
         self.n_channel = n_channel
         self.InsSeg = PointNetInstanceSeg(n_classes=3,n_channel=n_channel)
         self.STN = STNxyz(n_classes=3)
         self.est = PointNetEstimation(n_classes=3)
         self.Loss = FrustumPointNetLoss()
-    def forward(self, data_dicts, detection_only=False):
+    def forward(self, input_data):
         #dict_keys(['point_cloud', 'rot_angle', 'box3d_center', 'size_class', 'size_residual', 'angle_class', 'angle_residual', 'one_hot', 'seg'])
 
-        point_cloud = data_dicts.get('point_cloud')#torch.Size([32, 4, 1024])
+        input_data = input_data.copy()
+        
+
+        point_cloud = input_data.get('point_cloud')#torch.Size([32, 4, 1024])
         point_cloud = point_cloud[:,:self.n_channel,:]
-        one_hot = data_dicts.get('one_hot')#torch.Size([32, 3])
+        one_hot = input_data.get('one_hot') #torch.Size([32, 3])
         bs = point_cloud.shape[0]
 
-        # If not None, use to Compute Loss
-        if not detection_only:
-            seg_label = data_dicts.get('seg')#torch.Size([32, 1024])
-            box3d_center_label = data_dicts.get('box3d_center')#torch.Size([32, 3])
-            size_class_label = data_dicts.get('size_class')#torch.Size([32, 1])
-            size_residual_label = data_dicts.get('size_residual')#torch.Size([32, 3])
-            heading_class_label = data_dicts.get('angle_class')#torch.Size([32, 1])
-            heading_residual_label = data_dicts.get('angle_residual')#torch.Size([32, 1])
-
         # 3D Instance Segmentation PointNet
-        logits = self.InsSeg(point_cloud, one_hot)#bs,n,2
+        logits = self.InsSeg(point_cloud, one_hot) #bs,n,2
 
         # Mask Point Centroid
-        object_pts_xyz, mask_xyz_mean, mask = \
-                 point_cloud_masking(point_cloud, logits)
+        object_pts_xyz, mask_xyz_mean, mask = point_cloud_masking(point_cloud, logits)
 
         # T-Net
         object_pts_xyz = object_pts_xyz.cuda()
@@ -240,49 +235,19 @@ class FrustumPointNetv1(nn.Module):
 
         box3d_center = center_boxnet + stage1_center #bs,3
 
-        # losses = self.Loss(logits, seg_label, \
-        #          box3d_center, box3d_center_label, stage1_center, \
-        #          heading_scores, heading_residual_normalized, \
-        #          heading_residual, \
-        #          heading_class_label, heading_residual_label, \
-        #          size_scores, size_residual_normalized, \
-        #          size_residual, \
-        #          size_class_label, size_residual_label)
+        net_out = {}
 
-        # for key in losses.keys():
-        #     losses[key] = losses[key]/bs
+        net_out['logits'] = logits
+        net_out['box3d_center'] = box3d_center
+        net_out['stage1_center'] = stage1_center
+        net_out['heading_scores'] = heading_scores
+        net_out['heading_residual_normalized'] = heading_residual_normalized
+        net_out['heading_residual'] = heading_residual
+        net_out['size_scores'] = size_scores
+        net_out['size_residual_normalized'] = size_residual_normalized
+        net_out['size_residual'] = size_residual
 
-        # with torch.no_grad():
-        #     seg_correct = torch.argmax(logits.detach().cpu(), 2).eq(seg_label.detach().cpu()).numpy()
-        #     seg_accuracy = np.sum(seg_correct) / float(point_cloud.shape[-1])
-
-        #     iou2ds, iou3ds = compute_box3d_iou( \
-        #         box3d_center.detach().cpu().numpy(),
-        #         heading_scores.detach().cpu().numpy(),
-        #         heading_residual.detach().cpu().numpy(),
-        #         size_scores.detach().cpu().numpy(),
-        #         size_residual.detach().cpu().numpy(),
-        #         box3d_center_label.detach().cpu().numpy(),
-        #         heading_class_label.detach().cpu().numpy(),
-        #         heading_residual_label.detach().cpu().numpy(),
-        #         size_class_label.detach().cpu().numpy(),
-        #         size_residual_label.detach().cpu().numpy())
-        # metrics = {
-        #     'seg_acc': seg_accuracy,
-        #     'iou2d': iou2ds.mean(),
-        #     'iou3d': iou3ds.mean(),
-        #     'iou3d_0.7': np.sum(iou3ds >= 0.7)/bs
-        # }
-        # return losses, metrics
-
-        return logits, seg_label, \
-                 box3d_center, box3d_center_label, stage1_center, \
-                 heading_scores, heading_residual_normalized, \
-                 heading_residual, \
-                 heading_class_label, heading_residual_label, \
-                 size_scores, size_residual_normalized, \
-                 size_residual, \
-                 size_class_label, size_residual_label
+        return net_out
 
 
 if __name__ == '__main__':

@@ -14,10 +14,10 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(BASE_DIR)
 sys.path.append(ROOT_DIR)
 sys.path.append(os.path.join(ROOT_DIR,'models'))
-from box_util import box3d_iou
-from model_util import g_type2class, g_class2type, g_type2onehotclass
-from model_util import g_type_mean_size
-from model_util import NUM_HEADING_BIN, NUM_SIZE_CLUSTER
+from train.box_util import box3d_iou
+from models.model_util import g_type2class, g_class2type, g_type2onehotclass
+from models.model_util import g_type_mean_size
+from models.model_util import NUM_HEADING_BIN, NUM_SIZE_CLUSTER
 from configs.config import cfg
 import ipdb
 import torch
@@ -35,6 +35,7 @@ def rotate_pc_along_y(pc, rot_angle):
     cosval = np.cos(rot_angle)
     sinval = np.sin(rot_angle)
     rotmat = np.array([[cosval, -sinval],[sinval, cosval]])
+    print("PC",pc, " Rot", rot_angle)
     pc[:,[0,2]] = np.dot(pc[:,[0,2]], np.transpose(rotmat))
     return pc
 
@@ -530,7 +531,7 @@ def compute_box3d_iou(center_pred,
 def from_prediction_to_label_format(center, angle_class, angle_res,\
                                     size_class, size_res, rot_angle):
     ''' Convert predicted box parameters to label format. '''
-    l,w,h = class2size(size_class, size_res)
+    l, w, h = class2size(size_class, size_res)
     ry = class2angle(angle_class, angle_res, NUM_HEADING_BIN) + rot_angle
     tx,ty,tz = rotate_pc_along_y(np.expand_dims(center,0),-rot_angle).squeeze()
     ty += h/2.0

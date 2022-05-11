@@ -111,6 +111,7 @@ train_dataloader = DataLoader(TRAIN_DATASET, batch_size=BATCH_SIZE, shuffle=True
                                 num_workers=8,pin_memory=True)
 test_dataloader = DataLoader(TEST_DATASET, batch_size=BATCH_SIZE, shuffle=False,\
                                 num_workers=8,pin_memory=True)
+
 # Loss = FrustumPointNetLoss(return_all = FLAGS.return_all_loss)
 Loss = FrustumPointNetLoss()
 
@@ -155,71 +156,46 @@ def test_one_epoch(model, loader):
         batch_one_hot_vec:[32,3],
         '''
 
-        # Get data from trainloader
-        batch_data, batch_label, batch_center, \
-        batch_hclass, batch_hres, \
-        batch_sclass, batch_sres, \
-        batch_rot_angle, batch_one_hot_vec = data
+        point_set, seg, box3d_center, angle_class, angle_residual, \
+                size_class, size_residual, rot_angle, one_hot_vec = data
 
-        data_dicts = {}
+        labels = {}
+        input_data = {}
+        input_data['point_cloud'] = point_set.transpose(2,1).float().cuda()
+        input_data['rot_angle'] = rot_angle.float().cuda()
+        input_data['one_hot'] = one_hot_vec.float().cuda()
 
-        bs = batch_data.shape[0]
-        
-        data_dicts['point_cloud'] = batch_data.transpose(2,1).float().cuda()
-        data_dicts['rot_angle'] = batch_rot_angle.float().cuda()
-        data_dicts['box3d_center'] = batch_center.float().cuda()
-        data_dicts['size_class'] = batch_sclass.long().cuda()
-        data_dicts['size_residual'] = batch_sres.float().cuda()
-        data_dicts['angle_class']  = batch_hclass.long().cuda()
-        data_dicts['angle_residual'] = batch_hres.float().cuda()
-        data_dicts['one_hot'] = batch_one_hot_vec.float().cuda()
-        data_dicts['seg'] = batch_label.float().cuda()
+        labels['seg_label'] = seg.float().cuda()
+        labels['box3d_center_label'] = box3d_center.float().cuda()
+        labels['size_class_label'] = size_class.long().cuda()
+        labels['size_residual_label'] = size_residual.float().cuda()
+        labels['angle_class_label']  = angle_class.long().cuda()
+        labels['angle_residual_label'] = angle_residual.float().cuda()
+
+        bs = input_data['point_cloud'].shape[0]
 
         FrustumPointNet = model.eval()
 
-        logits, seg_label, box3d_center, box3d_center_label, stage1_center, \
-        heading_scores, heading_residual_normalized, heading_residual, \
-        heading_class_label, heading_residual_label, size_scores, \
-        size_residual_normalized, size_residual, size_class_label, \
-        size_residual_label = \
-            FrustumPointNet(data_dicts)
-
-        if FLAGS.return_all_loss:
-            losses = \
-                Loss(logits, seg_label, \
-                    box3d_center, box3d_center_label, stage1_center, \
-                    heading_scores, heading_residual_normalized, \
-                    heading_residual, \
-                    heading_class_label, heading_residual_label, \
-                    size_scores, size_residual_normalized, \
-                    size_residual, \
-                    size_class_label, size_residual_label)
-        else:
-            losses = Loss(logits, seg_label, \
-                    box3d_center, box3d_center_label, stage1_center, \
-                    heading_scores, heading_residual_normalized, \
-                    heading_residual, \
-                    heading_class_label, heading_residual_label, \
-                    size_scores, size_residual_normalized, \
-                    size_residual, \
-                    size_class_label, size_residual_label)
+        net_out = FrustumPointNet(input_data)
+        losses = Loss(net_out, labels)
 
         test_total_loss += losses['total_loss'].item()
 
-        correct = torch.argmax(logits.detach().cpu(), 2).eq(batch_label.detach().cpu().long()).cpu().numpy()
+        correct = torch.argmax(net_out['logits'].detach().cpu(), 2).eq(labels['seg_label'].detach().cpu().long()).cpu().numpy()
         accuracy = np.sum(correct) / float(NUM_POINT)
 
         iou2ds, iou3ds = provider.compute_box3d_iou( \
-            box3d_center.detach().cpu().numpy(),
-            heading_scores.detach().cpu().numpy(),
-            heading_residual.detach().cpu().numpy(),
-            size_scores.detach().cpu().numpy(),
-            size_residual.detach().cpu().numpy(),
-            box3d_center_label.detach().cpu().numpy(),
-            heading_class_label.detach().cpu().numpy(),
-            heading_residual_label.detach().cpu().numpy(),
-            size_class_label.detach().cpu().numpy(),
-            size_residual_label.detach().cpu().numpy())
+            net_out['box3d_center'].detach().cpu().numpy(),
+            net_out['heading_scores'].detach().cpu().numpy(),
+            net_out['heading_residual'].detach().cpu().numpy(),
+            net_out['size_scores'].detach().cpu().numpy(),
+            net_out['size_residual'].detach().cpu().numpy(),
+            labels['box3d_center_label'].detach().cpu().numpy(),
+            labels['angle_class_label'].detach().cpu().numpy(),
+            labels['angle_residual_label'].detach().cpu().numpy(),
+            labels['size_class_label'].detach().cpu().numpy(),
+            labels['size_residual_label'].detach().cpu().numpy())
+
 
         test_iou2d += np.sum(iou2ds)
         test_iou3d += np.sum(iou3ds)
@@ -350,24 +326,23 @@ def train():
             batch_rot_angle:[32],alpha, not rotation_y,
             batch_one_hot_vec:[32,3],
             '''
-            batch_data, batch_label, batch_center, \
-            batch_hclass, batch_hres, \
-            batch_sclass, batch_sres, \
-            batch_rot_angle, batch_one_hot_vec = data
+            point_set, seg, box3d_center, angle_class, angle_residual, \
+                   size_class, size_residual, rot_angle, one_hot_vec = data
 
-            data_dicts = {}
+            labels = {}
+            input_data = {}
+            input_data['point_cloud'] = point_set.transpose(2,1).float().cuda()
+            input_data['rot_angle'] = rot_angle.float().cuda()
+            input_data['one_hot'] = one_hot_vec.float().cuda()
 
-            bs = batch_data.shape[0]
-            
-            data_dicts['point_cloud'] = batch_data.transpose(2,1).float().cuda()
-            data_dicts['rot_angle'] = batch_rot_angle.float().cuda()
-            data_dicts['box3d_center'] = batch_center.float().cuda()
-            data_dicts['size_class'] = batch_sclass.long().cuda()
-            data_dicts['size_residual'] = batch_sres.float().cuda()
-            data_dicts['angle_class']  = batch_hclass.long().cuda()
-            data_dicts['angle_residual'] = batch_hres.float().cuda()
-            data_dicts['one_hot'] = batch_one_hot_vec.float().cuda()
-            data_dicts['seg'] = batch_label.float().cuda()
+            labels['seg_label'] = seg.float().cuda()
+            labels['box3d_center_label'] = box3d_center.float().cuda()
+            labels['size_class_label'] = size_class.long().cuda()
+            labels['size_residual_label'] = size_residual.float().cuda()
+            labels['angle_class_label']  = angle_class.long().cuda()
+            labels['angle_residual_label'] = angle_residual.float().cuda()
+
+            bs = input_data['point_cloud'].shape[0]
 
             optimizer.zero_grad()
             FrustumPointNet = FrustumPointNet.train()
@@ -379,47 +354,29 @@ def train():
                 bn_momentum = 1 - BN_DECAY_CLIP
             '''
 
-            logits, seg_label, \
-                 box3d_center, box3d_center_label, stage1_center, \
-                 heading_scores, heading_residual_normalized, \
-                 heading_residual, \
-                 heading_class_label, heading_residual_label, \
-                 size_scores, size_residual_normalized, \
-                 size_residual, \
-                 size_class_label, size_residual_label = \
-                FrustumPointNet(data_dicts)
-
-
-            losses = \
-                Loss(logits, seg_label, \
-                    box3d_center, box3d_center_label, stage1_center, \
-                    heading_scores, heading_residual_normalized, \
-                    heading_residual, \
-                    heading_class_label, heading_residual_label, \
-                    size_scores, size_residual_normalized, \
-                    size_residual, \
-                    size_class_label, size_residual_label)
-  
+            net_out = FrustumPointNet(input_data)
+            losses = Loss(net_out, labels)
 
             losses['total_loss'].backward()
             optimizer.step()
             train_total_loss += losses['total_loss'].item()
 
             with torch.no_grad():
-                correct = torch.argmax(logits.detach().cpu(), 2).eq(seg_label.detach().cpu()).numpy()
-                accuracy = np.sum(correct) / float(data_dicts['point_cloud'].shape[-1])
+                correct = torch.argmax(net_out['logits'].detach().cpu(), 2).eq(labels['seg_label'].detach().cpu().long()).cpu().numpy()
+                accuracy = np.sum(correct) / float(input_data['point_cloud'].shape[-1])
 
                 iou2ds, iou3ds = provider.compute_box3d_iou( \
-                    box3d_center.detach().cpu().numpy(),
-                    heading_scores.detach().cpu().numpy(),
-                    heading_residual.detach().cpu().numpy(),
-                    size_scores.detach().cpu().numpy(),
-                    size_residual.detach().cpu().numpy(),
-                    box3d_center_label.detach().cpu().numpy(),
-                    heading_class_label.detach().cpu().numpy(),
-                    heading_residual_label.detach().cpu().numpy(),
-                    size_class_label.detach().cpu().numpy(),
-                    size_residual_label.detach().cpu().numpy())
+                    net_out['box3d_center'].detach().cpu().numpy(),
+                    net_out['heading_scores'].detach().cpu().numpy(),
+                    net_out['heading_residual'].detach().cpu().numpy(),
+                    net_out['size_scores'].detach().cpu().numpy(),
+                    net_out['size_residual'].detach().cpu().numpy(),
+                    labels['box3d_center_label'].detach().cpu().numpy(),
+                    labels['angle_class_label'].detach().cpu().numpy(),
+                    labels['angle_residual_label'].detach().cpu().numpy(),
+                    labels['size_class_label'].detach().cpu().numpy(),
+                    labels['size_residual_label'].detach().cpu().numpy())
+
                 metrics = {
                     'seg_acc': accuracy,
                     'iou2d': iou2ds.mean(),
@@ -434,30 +391,30 @@ def train():
                 train_acc += accuracy
 
             if FLAGS.return_all_loss:
-                train_mask_loss          += losses['mask_loss'].item()
-                train_center_loss        += losses['center_loss'].item()
-                train_heading_class_loss += losses['heading_class_loss'].item()
-                train_size_class_loss    += losses['size_class_loss'].item()
-                train_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item()
-                train_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item()
-                train_stage1_center_loss += losses['stage1_center_loss'].item()
-                train_corners_loss       += losses['corners_loss'].item()
+                train_mask_loss          += losses['mask_loss'].item() 
+                train_center_loss        += losses['center_loss'].item() 
+                train_heading_class_loss += losses['heading_class_loss'].item() 
+                train_size_class_loss    += losses['size_class_loss'].item() 
+                train_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item() 
+                train_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item() 
+                train_stage1_center_loss += losses['stage1_center_loss'].item() 
+                train_corners_loss       += losses['corners_loss'].item() 
+
+        if FLAGS.return_all_loss:
+            train_mask_loss = train_mask_loss / n_samples
+            train_center_loss = train_center_loss / n_samples
+            train_heading_class_loss = train_heading_class_loss / n_samples
+            train_size_class_loss = train_size_class_loss / n_samples
+            train_heading_residuals_normalized_loss = train_heading_residuals_normalized_loss / n_samples
+            train_size_residuals_normalized_loss = train_size_residuals_normalized_loss / n_samples
+            train_stage1_center_loss = train_stage1_center_loss / n_samples
+            train_corners_loss = train_corners_loss / n_samples
 
         train_total_loss /= n_samples
-        train_acc /= n_samples*float(NUM_POINT)
+        train_acc /= n_samples * float(NUM_POINT)
         train_iou2d /= n_samples
         train_iou3d /= n_samples
         train_iou3d_acc /= n_samples
-
-        if FLAGS.return_all_loss:
-            train_mask_loss /= n_samples
-            train_center_loss /= n_samples
-            train_heading_class_loss /= n_samples
-            train_size_class_loss /= n_samples
-            train_heading_residuals_normalized_loss /= n_samples
-            train_size_residuals_normalized_loss /= n_samples
-            train_stage1_center_loss /= n_samples
-            train_corners_loss /= n_samples
 
         log_string('[%d: %d/%d] train loss: %.6f' % \
               (epoch + 1, i, len(train_dataloader),train_total_loss))
