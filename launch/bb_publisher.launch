@@ -1,6 +1,8 @@
 <launch>
-    <node name="fpointnet_subscriber"  pkg="bb_pub_node" type="fpointnet_sub_node.py" output="screen" />
-    <node name="kitti_publisher"       pkg="bb_pub_node" type="kitti_pub_node.py"     output="screen" />
-    <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0 0 0 1 map base_link 100" />
+    <arg name="node_start_delay" default="2.0" />
 
+    <node name="fpointnet_subscriber"  pkg="bb_pub_node" type="fpointnet_sub_node.py" output="screen" />
+    <node name="kitti_publisher"       pkg="bb_pub_node" type="kitti_pub_node.py"     output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay); $0 $@' "/>
+    <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0 0 0 1 map base_link 100" />
+    <!-- <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0.5 -0.5 0.5 0.5 map base_link 100" /> -->
 </launch>

@@ -1,4 +1,6 @@
+
 import os
+os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
 import argparse
 import importlib
@@ -10,12 +12,12 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
-from model_util import NUM_HEADING_BIN, NUM_SIZE_CLUSTER
+from models.model_util import NUM_HEADING_BIN, NUM_SIZE_CLUSTER
 import provider_fpointnet as provider
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import ipdb
-from model_util_old import FrustumPointNetLoss
+from models.model_util import FrustumPointNetLoss
 import time
 import torch.nn.functional as F
 
@@ -53,7 +55,7 @@ BATCH_SIZE = FLAGS.batch_size
 MODEL_PATH = FLAGS.model_path
 GPU_INDEX = FLAGS.gpu
 NUM_POINT = FLAGS.num_point
-MODEL = importlib.import_module(FLAGS.model)
+MODEL = importlib.import_module("models." + FLAGS.model)
 NUM_CLASSES = 2
 NUM_CHANNEL = 4
 if FLAGS.objtype == 'carpedcyc':
@@ -95,7 +97,7 @@ test_dataloader = DataLoader(TEST_DATASET, batch_size=BATCH_SIZE, shuffle=False,
 if FLAGS.model == 'frustum_pointnets':
     from models.frustum_pointnets import FrustumPointNetv1
 
-    FrustumPointNet = FrustumPointNetv1(n_classes=n_classes,n_channel=4).cuda()
+    FrustumPointNet = FrustumPointNetv1(n_classes=n_classes,n_channel=3).cuda()
 
 # Pre-trained Model
 pth = torch.load(FLAGS.model_path)
@@ -123,7 +125,7 @@ def write_detection_results(result_dir, id_list, type_list, box2d_list, center_l
     results = {}  # map from idx to list of strings, each string is a line (without \n)
     for i in range(len(center_list)):
         idx = id_list[i]
-        output_str = type_list[i] + " -1 -1 -10 "
+        output_str = "0 0 " + type_list[i] + " -1 -1 -10 "
         box2d = box2d_list[i]
         output_str += "%f %f %f %f " % (box2d[0], box2d[1], box2d[2], box2d[3])
         h, w, l, tx, ty, tz, ry = provider.from_prediction_to_label_format(center_list[i],
@@ -222,90 +224,69 @@ def test_one_epoch(model, loader):
         batch_one_hot_vec:[32,3],
         '''
         # 1. Load data
-        batch_data, batch_label, batch_center, \
-        batch_hclass, batch_hres, \
-        batch_sclass, batch_sres, \
-        batch_rot_angle, batch_one_hot_vec = data
+        point_set, seg, box3d_center, angle_class, angle_residual, \
+                size_class, size_residual, rot_angle, one_hot_vec = data
 
-        batch_data = batch_data.transpose(2, 1).float().cuda()
-        batch_label = batch_label.float().cuda()
-        batch_center = batch_center.float().cuda()
-        batch_hclass = batch_hclass.float().cuda()
-        batch_hres = batch_hres.float().cuda()
-        batch_sclass = batch_sclass.float().cuda()
-        batch_sres = batch_sres.float().cuda()
-        batch_rot_angle = batch_rot_angle.float().cuda()
-        batch_one_hot_vec = batch_one_hot_vec.float().cuda()
+        labels = {}
+        input_data = {}
+        input_data['point_cloud'] = point_set.transpose(2,1).float().cuda()
+        input_data['rot_angle'] = rot_angle.float().cuda()
+        input_data['one_hot'] = one_hot_vec.float().cuda()
 
-        # 2. Eval one batch
-        model = model.eval()
+        labels['seg_label'] = seg.float().cuda()
+        labels['box3d_center_label'] = box3d_center.float().cuda()
+        labels['size_class_label'] = size_class.long().cuda()
+        labels['size_residual_label'] = size_residual.float().cuda()
+        labels['angle_class_label']  = angle_class.long().cuda()
+        labels['angle_residual_label'] = angle_residual.float().cuda()
+
+        bs = input_data['point_cloud'].shape[0]
+
+        FrustumPointNet = model.eval()
+
         eval_t1 = time.perf_counter()
-        logits, mask, stage1_center, center_boxnet, \
-        heading_scores, heading_residuals_normalized, heading_residuals, \
-        size_scores, size_residuals_normalized, size_residuals, center = \
-            model(batch_data, batch_one_hot_vec)
+        net_out = FrustumPointNet(input_data)
         # logits:[32, 1024, 2] , mask:[32, 1024]
         eval_t2 = time.perf_counter()
         eval_time += (eval_t2 - eval_t1)
 
         # 3. Compute Loss
+        losses = Loss(net_out, labels)
+        
+        test_total_loss += losses['total_loss'].item()
         if FLAGS.return_all_loss:
-            total_loss, mask_loss, center_loss, heading_class_loss, \
-            size_class_loss, heading_residuals_normalized_loss, \
-            size_residuals_normalized_loss, stage1_center_loss, \
-            corners_loss = \
-                Loss(logits, batch_label, \
-                     center, batch_center, stage1_center, \
-                     heading_scores, heading_residuals_normalized, \
-                     heading_residuals, \
-                     batch_hclass, batch_hres, \
-                     size_scores, size_residuals_normalized, \
-                     size_residuals, \
-                     batch_sclass, batch_sres)
-        else:
-            total_loss = \
-                Loss(logits, batch_label, \
-                     center, batch_center, stage1_center, \
-                     heading_scores, heading_residuals_normalized, \
-                     heading_residuals, \
-                     batch_hclass, batch_hres, \
-                     size_scores, size_residuals_normalized, \
-                     size_residuals, \
-                     batch_sclass, batch_sres)
-
-        test_total_loss += total_loss.item()
-        if FLAGS.return_all_loss:
-            test_mask_loss += mask_loss.item()
-            test_center_loss += center_loss.item()
-            test_heading_class_loss += heading_class_loss.item()
-            test_size_class_loss += size_class_loss.item()
-            test_heading_residuals_normalized_loss += heading_residuals_normalized_loss.item()
-            test_size_residuals_normalized_loss += size_residuals_normalized_loss.item()
-            test_stage1_center_loss += stage1_center_loss.item()
-            test_corners_loss += corners_loss.item()
+            test_mask_loss          += losses['mask_loss'].item() 
+            test_center_loss        += losses['center_loss'].item() 
+            test_heading_class_loss += losses['heading_class_loss'].item() 
+            test_size_class_loss    += losses['size_class_loss'].item() 
+            test_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item() 
+            test_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item() 
+            test_stage1_center_loss += losses['stage1_center_loss'].item() 
+            test_corners_loss       += losses['corners_loss'].item()
 
         # 4. compute seg acc, IoU and acc(IoU)
-        correct = torch.argmax(logits, 2).eq(batch_label.detach().long()).cpu().numpy()
-        accuracy = np.sum(correct) / float(NUM_POINT)
+        correct = torch.argmax(net_out['logits'].detach().cpu(), 2).eq(labels['seg_label'].detach().cpu().long()).cpu().numpy()
+        accuracy = np.sum(correct) / float(input_data['point_cloud'].shape[-1])
         test_acc += accuracy
 
-        logits = logits.cpu().detach().numpy()
-        mask = mask.cpu().detach().numpy()
-        center_boxnet = center_boxnet.cpu().detach().numpy()
-        # stage1_center = stage1_center.cpu().detach().numpy()#
-        center = center.cpu().detach().numpy()
-        heading_scores = heading_scores.cpu().detach().numpy()
-        # heading_residuals_normalized = heading_residuals_normalized.cpu().detach().numpy()
-        heading_residuals = heading_residuals.cpu().detach().numpy()
-        size_scores = size_scores.cpu().detach().numpy()
-        size_residuals = size_residuals.cpu().detach().numpy()
-        # size_residuals_normalized = size_residuals_normalized.cpu().detach().numpy()#
-        batch_rot_angle = batch_rot_angle.cpu().detach().numpy()
-        batch_center = batch_center.cpu().detach().numpy()
-        batch_hclass = batch_hclass.cpu().detach().numpy()
-        batch_hres = batch_hres.cpu().detach().numpy()
-        batch_sclass = batch_sclass.cpu().detach().numpy()
-        batch_sres = batch_sres.cpu().detach().numpy()
+        # predictions
+        logits = net_out['logits'].cpu().detach().numpy()
+        center = net_out['box3d_center'].cpu().detach().numpy()#
+        stage1_center = net_out['stage1_center'].cpu().detach().numpy()
+        heading_scores = net_out['heading_scores'].cpu().detach().numpy()
+        heading_residuals_normalized = net_out['heading_residual_normalized'].cpu().detach().numpy()
+        heading_residuals = net_out['heading_residual'].cpu().detach().numpy()
+        size_scores = net_out['size_scores'].cpu().detach().numpy()
+        size_residuals = net_out['size_residual'].cpu().detach().numpy()
+        size_residuals_normalized = net_out['size_residual_normalized'].cpu().detach().numpy()#
+
+        # labels
+        batch_rot_angle = input_data['rot_angle'].cpu().detach().numpy()
+        batch_center = labels['box3d_center_label'] .cpu().detach().numpy()
+        batch_hclass = labels['angle_class_label'].cpu().detach().numpy()
+        batch_hres = labels['angle_residual_label'].cpu().detach().numpy()
+        batch_sclass = labels['size_class_label'].cpu().detach().numpy()
+        batch_sres = labels['size_residual_label'].cpu().detach().numpy()
 
         iou2ds, iou3ds = provider.compute_box3d_iou(
             center,
@@ -327,11 +308,11 @@ def test_one_epoch(model, loader):
         batch_center_pred = center  # _boxnet#torch.Size([32, 3])
         batch_hclass_pred = np.argmax(heading_scores, 1)  # (32,)
         batch_hres_pred = np.array([heading_residuals[j, batch_hclass_pred[j]] \
-                                    for j in range(batch_data.shape[0])])  # (32,)
+                                    for j in range(input_data['point_cloud'].shape[0])])  # (32,)
         # batch_size_cls,batch_size_res
         batch_sclass_pred = np.argmax(size_scores, 1)  # (32,)
         batch_sres_pred = np.vstack([size_residuals[j, batch_sclass_pred[j], :] \
-                                     for j in range(batch_data.shape[0])])  # (32,3)
+                                     for j in range(input_data['point_cloud'].shape[0])])  # (32,3)
 
         # batch_scores
         batch_seg_prob = softmax(logits)[:, :, 1]  # (32, 1024, 2) ->(32, 1024)
@@ -354,8 +335,8 @@ def test_one_epoch(model, loader):
         # batch_scores = heading_prob
 
         for j in range(batch_output.shape[0]):
-            ps_list.append(batch_data[j, ...])
-            seg_list.append(batch_label[j, ...])
+            ps_list.append(input_data['point_cloud'][j, ...])
+            seg_list.append(labels['seg_label'][j, ...])
             segp_list.append(batch_output[j, ...])
 
 
@@ -369,9 +350,9 @@ def test_one_epoch(model, loader):
 
             if batch_scores[j] < -1000000000: batch_scores[j] = -1000000000
             score_list.append(batch_scores[j])
-            pos_cnt += np.sum(batch_label[j, :].cpu().detach().numpy())
+            pos_cnt += np.sum(labels['seg_label'][j, :].cpu().detach().numpy())
             pos_pred_cnt += np.sum(batch_output[j, :])
-            pts_np = batch_data[j, :3, :].cpu().detach().numpy()  # (3,1024)
+            pts_np = input_data['point_cloud'][j, :3, :].cpu().detach().numpy()  # (3,1024)
             max_xyz = np.max(pts_np, axis=1)
             max_info = np.maximum(max_info, max_xyz)
             min_xyz = np.min(pts_np, axis=1)

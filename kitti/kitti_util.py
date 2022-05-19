@@ -316,9 +316,9 @@ def compute_box_3d(obj, P):
     R = roty(obj.ry)    
 
     # 3d bounding box dimensions
-    l = obj.l;
-    w = obj.w;
-    h = obj.h;
+    l = obj.l
+    w = obj.w
+    h = obj.h
     
     # 3d bounding box corners
     x_corners = [l/2,l/2,-l/2,-l/2,l/2,l/2,-l/2,-l/2];

@@ -96,6 +96,9 @@ def point_cloud_masking(pts, logits, xyz_only=True):
     :param logits: bs,n,2
     :param xyz_only: bool
     :return:
+        object_pts:
+        mask_xyz_mean:
+        mask:
     '''
     bs = pts.shape[0]
     n_pts = pts.shape[2]
@@ -106,12 +109,12 @@ def point_cloud_masking(pts, logits, xyz_only=True):
     pts_xyz = pts[:, :3, :]  # (bs,3,n)
     mask_xyz_mean = (mask.repeat(1, 3, 1) * pts_xyz).sum(2,keepdim=True)  # (bs, 3, 1)
     mask_xyz_mean = mask_xyz_mean / torch.clamp(mask_count,min=1)  # (bs, 3, 1)
-    
-    if 1 in mask.shape:
+
+    if mask.shape[0] == 1:
         mask = mask.squeeze()  # (bs,n)
-        mask = mask.unsqueeze(0)
+        mask = mask.unsqueeze(0)  # (bs,n)
     else:
-        mask = mask.squeeze
+        mask = mask.squeeze()  # (bs,n)
 
     pts_xyz_stage1 = pts_xyz - mask_xyz_mean.repeat(1, 1, n_pts)
 
@@ -227,7 +230,7 @@ class FrustumPointNetLoss(nn.Module):
     def __init__(self):
         super(FrustumPointNetLoss, self).__init__()
 
-    def forward(self, net_out, labels, corner_loss_weight=10.0,box_loss_weight=1.0):
+    def forward(self, net_out, labels, corner_loss_weight=10.0, box_loss_weight=1.0):
         '''
         1.InsSeg
         net_out['logits']: torch.Size([32, 1024, 2]) torch.float32
@@ -268,18 +271,19 @@ class FrustumPointNetLoss(nn.Module):
         center_dist = torch.norm(net_out['box3d_center']-labels['box3d_center_label'],dim=1)#(32,)
         center_loss = huber_loss(center_dist, delta=2.0)
 
-        stage1_center_dist = torch.norm(net_out['box3d_center']-net_out['stage1_center'],dim=1)#(32,)
+        # stage1_center_dist = torch.norm(net_out['box3d_center']-net_out['stage1_center'],dim=1)#(32,)
+        stage1_center_dist = torch.norm(labels['box3d_center_label']-net_out['stage1_center'],dim=1)#(32,)
         stage1_center_loss = huber_loss(stage1_center_dist, delta=1.0)
 
         # Heading Loss
         heading_class_loss = F.nll_loss(F.log_softmax(net_out['heading_scores'],dim=1), \
                                         labels['angle_class_label'].long())#tensor(2.4505, grad_fn=<NllLossBackward>)
+        
         hcls_onehot = torch.eye(NUM_HEADING_BIN)[labels['angle_class_label'].long()].cuda()  # 32,12
         heading_residual_normalized_label = \
             labels['angle_residual_label'] / (np.pi / NUM_HEADING_BIN)  # 32,
         heading_residual_normalized_dist = torch.sum( \
             net_out['heading_residual_normalized'] * hcls_onehot.float(), dim=1)  # 32,
-        ### Only compute reg loss on gt label
         heading_residual_normalized_loss = \
             huber_loss(heading_residual_normalized_dist -
                        heading_residual_normalized_label, delta=1.0)###fix,2020.1.14
@@ -291,6 +295,7 @@ class FrustumPointNetLoss(nn.Module):
         scls_onehot_repeat = scls_onehot.view(-1, NUM_SIZE_CLUSTER, 1).repeat(1, 1, 3)  # 32,8,3
         predicted_size_residual_normalized_dist = torch.sum( \
             net_out['size_residual_normalized'] * scls_onehot_repeat.cuda(), dim=1)#32,3
+        
         mean_size_arr_expand = torch.from_numpy(g_mean_size_arr).float().cuda() \
             .view(1, NUM_SIZE_CLUSTER, 3)  # 1,8,3
         mean_size_label = torch.sum(scls_onehot_repeat * mean_size_arr_expand, dim=1)# 32,3
@@ -309,6 +314,7 @@ class FrustumPointNetLoss(nn.Module):
             gt_mask.view(bs,NUM_HEADING_BIN,NUM_SIZE_CLUSTER,1,1)\
             .float().cuda() * corners_3d,\
             dim=[1, 2]) # (bs,8,3)
+            
         heading_bin_centers = torch.from_numpy(\
             np.arange(0, 2 * np.pi, 2 * np.pi / NUM_HEADING_BIN)).float().cuda()  # (NH,)
         heading_label = labels['angle_residual_label'].view(bs,1) + \

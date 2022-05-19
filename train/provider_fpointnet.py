@@ -155,15 +155,6 @@ class FrustumDataset(object):
                 # frustum_angle is clockwise angle from positive x-axis
                 self.frustum_angle_list = pickle.load(fp, encoding='latin1')
 
-        print('self.id_list', len(self.id_list))
-        print('self.box2d_list', len(self.box2d_list))
-        print('self.box3d_list', len(self.box3d_list))
-        print('self.input_list', len(self.input_list))
-        print('self.label_list', len(self.label_list))
-        print('self.type_list', len(self.type_list))
-        print('self.heading_list', len(self.heading_list))
-        print('self.size_list', len(self.size_list))
-
     def __len__(self):
         return len(self.input_list)
 
@@ -239,8 +230,6 @@ class FrustumDataset(object):
         else:
             return point_set, seg, box3d_center, angle_class, angle_residual, \
                    size_class, size_residual, rot_angle
-            
-
         
 
     def get_center_view_rot_angle(self, index):

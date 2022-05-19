@@ -21,7 +21,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-import provider_fpointnet as provider
+import train.provider_fpointnet as provider
 
 
 parser = argparse.ArgumentParser()
@@ -30,7 +30,7 @@ parser.add_argument('--model', default='frustum_pointnets', help='Model name [de
 parser.add_argument('--log_dir', default='log', help='Log dir [default: log]')
 parser.add_argument('--num_point', type=int, default=1024, help='Point Number [default: 2048]')
 parser.add_argument('--max_epoch', type=int, default=150, help='Epoch to run [default: 201]')
-parser.add_argument('--batch_size', type=int, default=32, help='Batch Size during training [default: 32]')
+parser.add_argument('--batch_size', type=int, default=15, help='Batch Size during training [default: 32]')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Initial learning rate [default: 0.001]')
 parser.add_argument('--momentum', type=float, default=0.9, help='Initial learning rate [default: 0.9]')
 parser.add_argument('--optimizer', default='adam', help='adam or momentum [default: adam]')
@@ -95,30 +95,21 @@ if FLAGS.dataset == 'kitti':
     TEST_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split=FLAGS.val_sets,
         rotate_to_center=True, one_hot=True,
         overwritten_data_path='kitti/frustum_'+FLAGS.objtype+'_'+FLAGS.val_sets+'.pickle')
-elif FLAGS.dataset == 'nuscenes2kitti':
-    SENSOR = FLAGS.sensor
-    overwritten_data_path_prefix = 'nuscenes2kitti/frustum_' +FLAGS.objtype + '_' + SENSOR + '_'
-    TRAIN_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split=FLAGS.train_sets,
-        rotate_to_center=True, random_flip=True, random_shift=True, one_hot=True,
-        overwritten_data_path=overwritten_data_path_prefix + '_'+FLAGS.train_sets+'.pickle')
-    TEST_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split=FLAGS.val_sets,
-        rotate_to_center=True, one_hot=True,
-        overwritten_data_path=overwritten_data_path_prefix + '_'+FLAGS.val_sets+'.pickle')
 else:
     print('Unknown dataset: %s' % (FLAGS.dataset))
     exit(-1)
+
 train_dataloader = DataLoader(TRAIN_DATASET, batch_size=BATCH_SIZE, shuffle=True,\
                                 num_workers=8,pin_memory=True)
 test_dataloader = DataLoader(TEST_DATASET, batch_size=BATCH_SIZE, shuffle=False,\
                                 num_workers=8,pin_memory=True)
 
-# Loss = FrustumPointNetLoss(return_all = FLAGS.return_all_loss)
 Loss = FrustumPointNetLoss()
 
 def log_string(out_str):
     LOG_FOUT.write(out_str+'\n')
     LOG_FOUT.flush()
-    print(out_str)
+
 def test_one_epoch(model, loader):
     test_n_samples = 0
     test_total_loss = 0.0
@@ -278,6 +269,7 @@ def train():
     best_epoch = 1
     best_file = ''
     best_save_pth = ''
+
     for epoch in range(MAX_EPOCH):
         log_string('**** EPOCH %03d ****' % (epoch + 1))
         sys.stdout.flush()
@@ -301,39 +293,46 @@ def train():
             train_corners_loss = 0.0
 
         n_samples = 0
-        for i, data in tqdm(enumerate(train_dataloader),\
-                total=len(train_dataloader), smoothing=0.9):
+        for i, data in tqdm(enumerate(train_dataloader), total=len(train_dataloader), smoothing=0.9):
             n_samples += data[0].shape[0]
 
             #for debug
             if FLAGS.debug==True:
                 if i==1 :
                     break
-
             '''
             data after frustum rotation
             1. For Seg
-            batch_data:[32, 2048, 4], pts in frustum, 
-            batch_label:[32, 2048], pts ins seg label in frustum,
+            input_data['point_cloud']: [32, 2048, 4], pts in frustum, 
+            labels['seg_label']: [32, 2048], pts ins seg label in frustum,
+
             2. For T-Net
-            batch_center:[32, 3],
+            labels['box3d_center_label']: [32, 3],
+
             3. For Box Est.
-            batch_hclass:[32],
-            batch_hres:[32],
-            batch_sclass:[32],
-            batch_sres:[32,3],
+            labels['angle_class_label']: [32],
+            labels['angle_residual_label']: [32],
+            labels['size_class_label']: [32],
+            labels['size_residual_label']: [32,3],
+
             4. Others
-            batch_rot_angle:[32],alpha, not rotation_y,
-            batch_one_hot_vec:[32,3],
+            input_data['rot_angle']: [32],alpha, not rotation_y,
+            input_data['one_hot']: [32,3],
             '''
+
             point_set, seg, box3d_center, angle_class, angle_residual, \
                    size_class, size_residual, rot_angle, one_hot_vec = data
+    
+            print(point_set.shape)
+
 
             labels = {}
             input_data = {}
             input_data['point_cloud'] = point_set.transpose(2,1).float().cuda()
+
             input_data['rot_angle'] = rot_angle.float().cuda()
             input_data['one_hot'] = one_hot_vec.float().cuda()
+
 
             labels['seg_label'] = seg.float().cuda()
             labels['box3d_center_label'] = box3d_center.float().cuda()
@@ -345,6 +344,7 @@ def train():
             bs = input_data['point_cloud'].shape[0]
 
             optimizer.zero_grad()
+
             FrustumPointNet = FrustumPointNet.train()
 
             '''
@@ -384,31 +384,22 @@ def train():
                     'iou3d_0.7': np.sum(iou3ds >= 0.7)/bs
                 }
 
+                train_acc += accuracy
+
                 train_iou2d += np.sum(iou2ds)
                 train_iou3d += np.sum(iou3ds)
                 train_iou3d_acc += np.sum(iou3ds>=0.7)
 
-                train_acc += accuracy
 
             if FLAGS.return_all_loss:
-                train_mask_loss          += losses['mask_loss'].item() 
-                train_center_loss        += losses['center_loss'].item() 
-                train_heading_class_loss += losses['heading_class_loss'].item() 
-                train_size_class_loss    += losses['size_class_loss'].item() 
-                train_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item() 
-                train_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item() 
-                train_stage1_center_loss += losses['stage1_center_loss'].item() 
-                train_corners_loss       += losses['corners_loss'].item() 
-
-        if FLAGS.return_all_loss:
-            train_mask_loss = train_mask_loss / n_samples
-            train_center_loss = train_center_loss / n_samples
-            train_heading_class_loss = train_heading_class_loss / n_samples
-            train_size_class_loss = train_size_class_loss / n_samples
-            train_heading_residuals_normalized_loss = train_heading_residuals_normalized_loss / n_samples
-            train_size_residuals_normalized_loss = train_size_residuals_normalized_loss / n_samples
-            train_stage1_center_loss = train_stage1_center_loss / n_samples
-            train_corners_loss = train_corners_loss / n_samples
+                train_mask_loss          += losses['mask_loss'].item() / n_samples
+                train_center_loss        += losses['center_loss'].item() / n_samples
+                train_heading_class_loss += losses['heading_class_loss'].item() / n_samples
+                train_size_class_loss    += losses['size_class_loss'].item() / n_samples
+                train_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item() / n_samples
+                train_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item() / n_samples
+                train_stage1_center_loss += losses['stage1_center_loss'].item() / n_samples
+                train_corners_loss       += losses['corners_loss'].item() / n_samples
 
         train_total_loss /= n_samples
         train_acc /= n_samples * float(NUM_POINT)
@@ -416,8 +407,7 @@ def train():
         train_iou3d /= n_samples
         train_iou3d_acc /= n_samples
 
-        log_string('[%d: %d/%d] train loss: %.6f' % \
-              (epoch + 1, i, len(train_dataloader),train_total_loss))
+        log_string('[%d: %d/%d] train loss: %.6f' % (epoch + 1, i, len(train_dataloader),train_total_loss))
         log_string('segmentation accuracy: %.6f'% train_acc )
         log_string('box IoU(ground/3D): %.6f/%.6f'% (train_iou2d, train_iou3d))
         log_string('box estimation accuracy (IoU=0.7): %.6f'%(train_iou3d_acc))

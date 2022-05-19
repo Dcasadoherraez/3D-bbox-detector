@@ -175,6 +175,7 @@ class STNxyz(nn.Module):
         self.bn3 = nn.BatchNorm1d(256)
         self.fcbn1 = nn.BatchNorm1d(256)
         self.fcbn2 = nn.BatchNorm1d(128)
+        
     def forward(self, pts,one_hot_vec):
         bs = pts.shape[0]
         x = F.relu(self.bn1(self.conv1(pts)))# bs,128,n
@@ -201,11 +202,9 @@ class FrustumPointNetv1(nn.Module):
     def forward(self, input_data):
         #dict_keys(['point_cloud', 'rot_angle', 'box3d_center', 'size_class', 'size_residual', 'angle_class', 'angle_residual', 'one_hot', 'seg'])
 
-        input_data = input_data.copy()
-        
+        point_cloud = input_data.get('point_cloud') # torch.Size([32, 4, 1024])
+        point_cloud = point_cloud[:,:self.n_channel,:] # torch.Size([32, 3, 1024])
 
-        point_cloud = input_data.get('point_cloud')#torch.Size([32, 4, 1024])
-        point_cloud = point_cloud[:,:self.n_channel,:]
         one_hot = input_data.get('one_hot') #torch.Size([32, 3])
         bs = point_cloud.shape[0]
 
@@ -214,29 +213,28 @@ class FrustumPointNetv1(nn.Module):
 
         # Mask Point Centroid
         object_pts_xyz, mask_xyz_mean, mask = point_cloud_masking(point_cloud, logits)
-
+        
         # T-Net
         object_pts_xyz = object_pts_xyz.cuda()
-        center_delta = self.STN(object_pts_xyz,one_hot)#(32,3)
-        stage1_center = center_delta + mask_xyz_mean#(32,3)
+        center_delta = self.STN(object_pts_xyz, one_hot)#(32,3)
+        stage1_center = center_delta + mask_xyz_mean #(32,3)
 
         if(np.isnan(stage1_center.cpu().detach().numpy()).any()):
             ipdb.set_trace()
-        object_pts_xyz_new = object_pts_xyz - \
-                    center_delta.view(center_delta.shape[0],-1,1).repeat(1,1,object_pts_xyz.shape[-1])
+        object_pts_xyz_new = object_pts_xyz - center_delta.view(center_delta.shape[0],-1,1).repeat(1,1,object_pts_xyz.shape[-1])
 
         # 3D Box Estimation
-        box_pred = self.est(object_pts_xyz_new,one_hot)#(32, 59)
+        box_pred = self.est(object_pts_xyz_new, one_hot)#(32, 59)
 
-        center_boxnet, \
+        center_boxnet_delta, \
         heading_scores, heading_residual_normalized, heading_residual, \
         size_scores, size_residual_normalized, size_residual = \
                 parse_output_to_tensors(box_pred, logits, mask, stage1_center)
 
-        box3d_center = center_boxnet + stage1_center #bs,3
+        box3d_center = center_boxnet_delta + stage1_center #bs,3
 
         net_out = {}
-
+        print(logits)
         net_out['logits'] = logits
         net_out['box3d_center'] = box3d_center
         net_out['stage1_center'] = stage1_center
@@ -246,6 +244,8 @@ class FrustumPointNetv1(nn.Module):
         net_out['size_scores'] = size_scores
         net_out['size_residual_normalized'] = size_residual_normalized
         net_out['size_residual'] = size_residual
+        net_out['mask_xyz'] = mask_xyz_mean
+        net_out['object_points'] = object_pts_xyz 
 
         return net_out
 

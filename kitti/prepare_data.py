@@ -131,7 +131,7 @@ def extract_frustum_data(idx_filename, split, output_filename, viz=False,
                     (pc_image_coord[:,1]<ymax) & \
                     (pc_image_coord[:,1]>=ymin)
                 box_fov_inds = box_fov_inds & img_fov_inds
-                pc_in_box_fov = pc_rect[box_fov_inds,:]#(1607, 4)
+                pc_in_box_fov = pc_rect[box_fov_inds,:] #(1607, 4)
                 
                 # Get frustum angle (according to center pixel in 2D BOX)
                 box2d_center = np.array([(xmin+xmax)/2.0, (ymin+ymax)/2.0])
@@ -139,8 +139,8 @@ def extract_frustum_data(idx_filename, split, output_filename, viz=False,
                 uvdepth[0,0:2] = box2d_center
                 uvdepth[0,2] = 20 # some random depth
                 box2d_center_rect = calib.project_image_to_rect(uvdepth)
-                frustum_angle = -1 * np.arctan2(box2d_center_rect[0,2],
-                    box2d_center_rect[0,0])
+                frustum_angle = -1 * np.arctan2(box2d_center_rect[0,2], box2d_center_rect[0,0])
+                    
                 # 3D BOX: Get pts velo in 3d box
                 obj = objects[obj_idx]
                 box3d_pts_2d, box3d_pts_3d = utils.compute_box_3d(obj, calib.P) #(8, 2)(8, 3)

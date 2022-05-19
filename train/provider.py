@@ -35,9 +35,24 @@ def rotate_pc_along_y(pc, rot_angle):
     cosval = np.cos(rot_angle)
     sinval = np.sin(rot_angle)
     rotmat = np.array([[cosval, -sinval],[sinval, cosval]])
-    print("PC",pc, " Rot", rot_angle)
     pc[:,[0,2]] = np.dot(pc[:,[0,2]], np.transpose(rotmat))
     return pc
+
+def rotate_pc_along_y_rviz(pc, rot_angle):
+    '''
+    Input:
+        pc: numpy array (N,C), first 3 channels are XYZ
+            z is facing forward, x is left ward, y is downward
+        rot_angle: rad scalar
+    Output:
+        pc: updated pc with XYZ rotated
+    '''
+    cosval = np.cos(-rot_angle)
+    sinval = np.sin(-rot_angle)
+    rotmat = np.array([[cosval, sinval],[-sinval, cosval]])
+    pc[:,[0,1]] = np.dot(pc[:,[0,1]], np.transpose(rotmat))
+    return pc
+
 
 def angle2class(angle, num_class):
     ''' Convert continuous angle to discrete class and residual.
@@ -526,7 +541,6 @@ def compute_box3d_iou(center_pred,
         iou2d_list.append(iou_2d)
     return np.array(iou2d_list, dtype=np.float32), \
         np.array(iou3d_list, dtype=np.float32)
-
 
 def from_prediction_to_label_format(center, angle_class, angle_res,\
                                     size_class, size_res, rot_angle):

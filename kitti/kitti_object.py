@@ -4,6 +4,10 @@ Author: Charles R. Qi
 Date: September 2017
 '''
 from __future__ import print_function
+from cProfile import label
+import os
+os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import time
 import ipdb
 import shutil
@@ -44,27 +48,35 @@ class kitti_object(object):
             print('Unknown split: %s' % (split))
             exit(-1)
 
-        self.image_dir = os.path.join(self.split_dir, 'image_02')
-        self.calib_dir = os.path.join(self.split_dir, 'calib')
-        self.lidar_dir = os.path.join(self.split_dir, 'velodyne')
-        self.label_dir = os.path.join(self.split_dir, 'label_02')
+        # self.image_dir = os.path.join(self.split_dir, 'image_02')
+        # self.calib_dir = os.path.join(self.split_dir, 'calib')
+        # self.lidar_dir = os.path.join(self.split_dir, 'velodyne')
+        # self.label_dir = os.path.join(self.split_dir, 'label_02')
+
+        self.image_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/image_02"
+        self.calib_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/calib"
+        self.lidar_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/velodyne"
+        self.label_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/label_02"
+        
 
     def __len__(self):
         return self.num_samples
 
     def get_image(self, idx):
         assert(idx < self.num_samples)
-        img_filename = os.path.join(self.image_dir, '%06d.png' % (idx))
+        img_filename = os.path.join(self.image_dir, '%04d' % (idx), '%06d.png' % (idx))
+        print(img_filename)
         return utils.load_image(img_filename)
 
     def get_lidar(self, idx):
         assert(idx < self.num_samples)
-        lidar_filename = os.path.join(self.lidar_dir, '%06d.bin' % (idx))
+        lidar_filename = os.path.join(self.lidar_dir, '%04d' % (idx), '%06d.bin' % (idx))
         return utils.load_velo_scan(lidar_filename)
 
     def get_calibration(self, idx):
         assert(idx < self.num_samples)
         calib_filename = os.path.join(self.calib_dir, '%04d.txt' % (idx))
+        print(calib_filename)
         return utils.Calibration(calib_filename)
 
     def get_label_objects(self, idx):
@@ -188,7 +200,7 @@ def show_lidar_with_boxes(pc_velo, objects, calib,
         Draw 3d box in LiDAR point cloud (in velo coord system) '''
     if 'mlab' not in sys.modules:
         import mayavi.mlab as mlab
-    from viz_util import draw_lidar_simple, draw_lidar, draw_gt_boxes3d
+    from mmayavi.viz_util import draw_lidar_simple, draw_lidar, draw_gt_boxes3d
 
     print(('All point num: ', pc_velo.shape[0]))
     fig = mlab.figure(figure=None, bgcolor=(0, 0, 0),
@@ -306,15 +318,19 @@ def dataset_viz_pred(pred_label_dir):
         shutil.rmtree(save3ddir_pred)
     os.makedirs(save3ddir_pred)
 
-    for data_idx in range(len(dataset)):
+    for data_idx in range(1, len(dataset)):
         # Load data from dataset
         objects = dataset.get_label_objects(data_idx)
         objects_pred_label_filename = os.path.join(
             pred_label_dir, '%06d.txt' % (data_idx))
+        print(objects_pred_label_filename)
         if os.path.exists(objects_pred_label_filename):
             objects_pred = utils.read_label(objects_pred_label_filename)
         # objects[0].print_object()
         img = dataset.get_image(data_idx)
+        cv2.imshow("hello", np.copy(img)) 
+        cv2.waitKey(0)
+
         #img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img_height, img_width, img_channel = img.shape
         print(('Image shape: ', img.shape))
@@ -323,20 +339,28 @@ def dataset_viz_pred(pred_label_dir):
 
         # Draw 2d and 3d boxes on image
         # show_image_with_boxes(img, objects, calib, False)
-        img1, img2 = return_image_with_boxes(img, objects, calib, True)
-        cv2.imwrite(os.path.join(save2ddir, str(
+        print(len(objects))
+        print(objects[0].class_id)
+        img1, img2 = return_image_with_boxes(img, objects[0:2], calib, True)
+        cv2.imshow(os.path.join(save2ddir, str(
             data_idx).zfill(6) + '.png'), img1)
-        cv2.imwrite(os.path.join(save3ddir, str(
-            data_idx).zfill(6) + '.png'), img2)
+        cv2.waitKey(0)
+        # cv2.imshow(os.path.join(save3ddir, str(
+        #     data_idx).zfill(6) + '.png'), img2)
+        # cv2.waitKey(0)
 
         if os.path.exists(objects_pred_label_filename):
             print('writing...')
             img1_pred, img2_pred = return_image_with_boxes(
                 img, objects_pred, calib, True)
-            cv2.imwrite(os.path.join(save2ddir_pred, str(
+            cv2.imshow(os.path.join(save2ddir_pred, str(
                 data_idx).zfill(6) + '.png'), img1_pred)
-            cv2.imwrite(os.path.join(save3ddir_pred, str(
+            cv2.waitKey(0)
+
+            cv2.imshow(os.path.join(save3ddir_pred, str(
                 data_idx).zfill(6) + '.png'), img2_pred)
+            cv2.waitKey(0)
+
         # raw_input()
         # Show all LiDAR points. Draw 3d box in LiDAR point cloud
         # show_lidar_with_boxes(pc_velo, objects, calib, True, img_width, img_height)
@@ -345,6 +369,6 @@ def dataset_viz_pred(pred_label_dir):
 
 if __name__ == '__main__':
     import mayavi.mlab as mlab
-    from viz_util import draw_lidar_simple, draw_lidar, draw_gt_boxes3d
+    from mmayavi.viz_util import draw_lidar_simple, draw_lidar, draw_gt_boxes3d
     # dataset_viz()
-    dataset_viz_pred('train/kitti_caronly_v1_fromrgb/data')
+    dataset_viz_pred('/hdd/catkin_ws/src/bb_pub_node/train/detection_results_v1/data')
