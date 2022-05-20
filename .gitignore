@@ -1,6 +1,6 @@
 *.pth
-log/
-runs/
-kitti/*.pickle
+src/frustum_pointnet/log/
+src/frustum_pointnet/runs/
+src/frustum_pointnet/kitti/*.pickle
 */__pycache__
 

@@ -3,27 +3,17 @@
 Author: Charles R. Qi
 Date: September 2017
 '''
-from __future__ import print_function
-from cProfile import label
 import os
-os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import time
-import ipdb
-import shutil
-from PIL import Image
 import cv2
-import numpy as np
 import sys
+import time
+import shutil
+import numpy as np
+from PIL import Image
 import kitti.kitti_util as utils
-
-
-import os
-os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(os.path.join(ROOT_DIR, 'mayavi'))
 
 try:
     raw_input          # Python 2
@@ -57,20 +47,21 @@ class kitti_object(object):
         self.calib_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/calib"
         self.lidar_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/velodyne"
         self.label_dir = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training/label_02"
-        
 
     def __len__(self):
         return self.num_samples
 
     def get_image(self, idx):
         assert(idx < self.num_samples)
-        img_filename = os.path.join(self.image_dir, '%04d' % (idx), '%06d.png' % (idx))
+        img_filename = os.path.join(
+            self.image_dir, '%04d' % (idx), '%06d.png' % (idx))
         print(img_filename)
         return utils.load_image(img_filename)
 
     def get_lidar(self, idx):
         assert(idx < self.num_samples)
-        lidar_filename = os.path.join(self.lidar_dir, '%04d' % (idx), '%06d.bin' % (idx))
+        lidar_filename = os.path.join(
+            self.lidar_dir, '%04d' % (idx), '%06d.bin' % (idx))
         return utils.load_velo_scan(lidar_filename)
 
     def get_calibration(self, idx):
@@ -328,7 +319,7 @@ def dataset_viz_pred(pred_label_dir):
             objects_pred = utils.read_label(objects_pred_label_filename)
         # objects[0].print_object()
         img = dataset.get_image(data_idx)
-        cv2.imshow("hello", np.copy(img)) 
+        cv2.imshow("hello", np.copy(img))
         cv2.waitKey(0)
 
         #img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -371,4 +362,5 @@ if __name__ == '__main__':
     import mayavi.mlab as mlab
     from mmayavi.viz_util import draw_lidar_simple, draw_lidar, draw_gt_boxes3d
     # dataset_viz()
-    dataset_viz_pred('/hdd/catkin_ws/src/bb_pub_node/train/detection_results_v1/data')
+    dataset_viz_pred(
+        '/hdd/catkin_ws/src/bb_pub_node/train/detection_results_v1/data')

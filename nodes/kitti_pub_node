@@ -1,19 +1,20 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import os
-os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sensor_msgs.msg import Image, PointCloud2, PointField
-from jsk_recognition_msgs.msg import BoundingBox, BoundingBoxArray
-from bb_pub_node.msg import BoundingBox2D, BoundingBox2DArray
-from cv_bridge import CvBridge, CvBridgeError
-from sensor_msgs import point_cloud2
-import kitti.kitti_util as utils
-from kitti.kitti_object import get_lidar_in_image_fov, kitti_object
-from models.frustum_pointnets import g_type2class
-from std_msgs.msg import Header, String
 import cv2
 import rospy
 import operator
 import numpy as np
+
+from sensor_msgs import point_cloud2
+from std_msgs.msg import Header, String
+import jsk_recognition_msgs.msg as jsk_msgs
+import darknet_ros_msgs.msg as darknet_msgs
+from cv_bridge import CvBridge, CvBridgeError
+from sensor_msgs.msg import Image, PointCloud2, PointField
+
+from frustum_pointnet.kitti import kitti_util as utils
+from frustum_pointnet.models.frustum_pointnets import g_type2class
+from frustum_pointnet.kitti.kitti_object import get_lidar_in_image_fov, kitti_object
 
 pub_class = ['Car', 'Pedestrian', 'Cyclist']
 
@@ -46,25 +47,26 @@ class KittiPublisher:
         self.bridge = CvBridge()
 
         # Messages that will be published by the node:
-        
+
         # - RGB images
-        self.img_pub = rospy.Publisher('image_publisher', Image, queue_size=1)
-        
+        self.img_pub = rospy.Publisher(
+            'image_publisher', Image, queue_size=1)
+
         # - Velodyne pointcloud
         self.pc_pub = rospy.Publisher(
             'pointcloud_publisher', PointCloud2, queue_size=1)
-        
+
         # - Pointcloud frustrum from image size
         self.depth_pub = rospy.Publisher(
             'depth_publisher', PointCloud2, queue_size=1)
 
         # - 3D Annotated bounding boxes
         self.gt_bb_pub_3D = rospy.Publisher(
-            'gt_bb_publisher_3D', BoundingBoxArray, queue_size=1)
+            'gt_bb_publisher_3D', jsk_msgs.BoundingBoxArray, queue_size=1)
 
         # - 2D Annotated bounding boxes
         self.gt_bb_pub_2D = rospy.Publisher(
-            'gt_bb_publisher_2D', BoundingBox2DArray, queue_size=1)
+            'gt_bb_publisher_2D', darknet_msgs.BoundingBoxes, queue_size=1)
 
         # Get all dataset paths
         self.images = sorted(os.listdir(self.img_dataset_path))
@@ -106,7 +108,6 @@ class KittiPublisher:
         header.frame_id = "base_link"
         header.stamp = rospy.Time.now()
 
-
         return point_cloud2.create_cloud(header, fields, points)
 
     def pub_pc(self, pc, timestamp):
@@ -118,22 +119,11 @@ class KittiPublisher:
 
         return points
 
-    # def get_lidar_in_image_fov(self, pointcloud, xmin, ymin, xmax, ymax,
-    #                            clip_distance=2.0):
-    #     ''' Filter lidar points, keep those in image FOV '''
-    #     pc_velo = pointcloud[:, :3]
-    #     pts_2d = self.calib.project_velo_to_image(pc_velo)
-    #     fov_inds = (pts_2d[:, 0] < xmax) & (pts_2d[:, 0] >= xmin) & \
-    #                (pts_2d[:, 1] < ymax) & (pts_2d[:, 1] >= ymin)
-    #     fov_inds = fov_inds & (pc_velo[:, 0] > clip_distance)
-    #     imgfov_pc_velo = pointcloud[fov_inds, :]
-
-    #     return imgfov_pc_velo, pts_2d, fov_inds
-
     def pub_depth(self, image, pointcloud, timestamp):
         '''Publish lidar points in FOV'''
         h, w, _ = image.shape
-        _, _, fov_inds = get_lidar_in_image_fov(pointcloud[:, :3], self.calib, 0, 0, w, h, return_more=True)
+        _, _, fov_inds = get_lidar_in_image_fov(
+            pointcloud[:, :3], self.calib, 0, 0, w, h, return_more=True)
         lidar_window = pointcloud[fov_inds, :]
         lidar_window_msg = self.array2pc(lidar_window)
         lidar_window_msg.header.stamp = timestamp
@@ -144,19 +134,19 @@ class KittiPublisher:
 
     def pub_gt_bbox(self, timestamp):
         '''Publish target object bounding boxes'''
-      
+
         objects = self.labels
 
         i = self.curr_frame
 
         gt_bbox_array_3D = []
-        bbox_array_3D = BoundingBoxArray()
+        bbox_array_3D = jsk_msgs.BoundingBoxArray()
         bbox_array_3D.header = Header()
         bbox_array_3D.header.stamp = timestamp
         bbox_array_3D.header.frame_id = "base_link"
 
         gt_bbox_array_2D = []
-        bbox_array_2D = BoundingBox2DArray()
+        bbox_array_2D = darknet_msgs.BoundingBoxes()
         bbox_array_2D.header = Header()
         bbox_array_2D.header.stamp = timestamp
         bbox_array_2D.header.frame_id = "base_link"
@@ -166,7 +156,7 @@ class KittiPublisher:
 
                 # 3D Bounding box
                 obj = objects[i]
-                bbox_3D = BoundingBox()
+                bbox_3D = jsk_msgs.BoundingBox()
                 bbox_3D.header.frame_id = "base_link"
                 bbox_3D.dimensions.x = obj.w
                 bbox_3D.dimensions.y = obj.l
@@ -175,42 +165,48 @@ class KittiPublisher:
                 bbox_3D.pose.position.y = -obj.t[0]
                 bbox_3D.pose.position.z = -obj.t[1]/2
 
-
                 roll, pitch, yaw = 0, 0, -obj.ry
                 qx = np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - \
-                     np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+                    np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
                 qy = np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + \
-                     np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
+                    np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
                 qz = np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - \
-                     np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
+                    np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
                 qw = np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + \
-                     np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+                    np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
 
                 bbox_3D.pose.orientation.x = qx
                 bbox_3D.pose.orientation.y = qy
                 bbox_3D.pose.orientation.z = qz
                 bbox_3D.pose.orientation.w = qw
 
-                bbox_3D.label = g_type2class[obj.type]
-                bbox_3D.value = obj.class_id
+                # bbox_3D.label = g_type2class[obj.type]
+#                 bbox_3D.value = obj.class_id
 
                 gt_bbox_array_3D.append(bbox_3D)
 
                 # 2D Bounding box
-                bbox_2D = BoundingBox2D()
-                w = obj.xmax - obj.xmin
-                h = obj.ymax - obj.ymin
+                bbox_2D = darknet_msgs.BoundingBox()
 
-                bbox_2D.center.x = obj.xmin + w // 2
-                bbox_2D.center.y = obj.ymin + h // 2
-                bbox_2D.center.theta = 0
-                bbox_2D.size_x = w
-                bbox_2D.size_y = h
+                # w = obj.xmax - obj.xmin
+                # h = obj.ymax - obj.ymin
+                # bbox_2D.center.x = obj.xmin + w // 2
+                # bbox_2D.center.y = obj.ymin + h // 2
+                # bbox_2D.center.theta = 0
+                # bbox_2D.size_x = w
+                # bbox_2D.size_y = h
+                # bbox_2D.type = obj.type
 
-                bbox_2D.type = obj.type
 
                 # Only publish useful ones
                 if obj.type in pub_class:
+                    bbox_2D.xmin = int(obj.xmin)
+                    bbox_2D.ymin = int(obj.ymin)
+                    bbox_2D.xmax = int(obj.xmax)
+                    bbox_2D.ymax = int(obj.ymax)
+                    bbox_2D.Class = obj.type
+                    bbox_2D.id = g_type2class[obj.type]
+                    bbox_2D.probability = 1.0
                     gt_bbox_array_2D.append(bbox_2D)
 
             elif objects[i].frame_num > self.curr_frame:
@@ -218,13 +214,11 @@ class KittiPublisher:
 
             i += 1
 
-        
         bbox_array_3D.boxes = gt_bbox_array_3D
-        bbox_array_2D.boxes = gt_bbox_array_2D
+        bbox_array_2D.bounding_boxes = gt_bbox_array_2D
 
         self.gt_bb_pub_3D.publish(bbox_array_3D)
         self.gt_bb_pub_2D.publish(bbox_array_2D)
-
 
     def pub_loop(self):
         '''Main node loop for topic publishing'''

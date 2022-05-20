@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(bb_pub_node)
+project(frustum_pointnet)
 
 find_package(catkin REQUIRED COMPONENTS
   rospy
@@ -7,20 +7,24 @@ find_package(catkin REQUIRED COMPONENTS
   vision_msgs
   ros_numpy
   message_generation
+  darknet_ros_msgs
 )
 
-add_message_files(
-  FILES
-  BoundingBox2D.msg
-  BoundingBox2DArray.msg
-)
+# Use if there is a setup.py folder
+catkin_python_setup()
 
-generate_messages(
-  DEPENDENCIES
-  std_msgs
-  vision_msgs
-  bb_pub_node
-)
+# add_message_files(
+#   FILES
+#   BoundingBox2D.msg
+#   BoundingBox2DArray.msg
+# )
+
+# generate_messages(
+#   DEPENDENCIES
+#   std_msgs
+#   vision_msgs
+#   frustum_pointnet
+# )
 
 
 catkin_package(
@@ -41,7 +45,7 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 catkin_install_python(PROGRAMS 
-  ros/fpointnet_sub_node.py
-  ros/kitti_pub_node.py
+  nodes/fpointnet_sub_node
+  nodes/kitti_pub_node
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -21,12 +21,9 @@ from models.model_util import FrustumPointNetLoss
 from train.provider_fpointnet import compute_box3d_iou
 
 
-NUM_HEADING_BIN = 12
-NUM_SIZE_CLUSTER = 8 # one cluster for each type
-NUM_OBJECT_POINT = 512
-
 g_type2class={'Car':0, 'Van':1, 'Truck':2, 'Pedestrian':3,
               'Person_sitting':4, 'Cyclist':5, 'Tram':6, 'Misc':7}
+
 g_class2type = {g_type2class[t]:t for t in g_type2class}
 g_type2onehotclass = {'Car': 0, 'Pedestrian': 1, 'Cyclist': 2}
 
@@ -39,6 +36,10 @@ g_type_mean_size = {'Car': np.array([3.88311640418,1.62856739989,1.52563191462])
                     'Tram': np.array([16.17150617,2.53246914,3.53079012]),
                     'Misc': np.array([3.64300781,1.54298177,1.92320313])}
 
+
+NUM_HEADING_BIN = 12
+NUM_SIZE_CLUSTER = len(g_type2class) # one cluster for each type
+NUM_OBJECT_POINT = 512
 
 g_mean_size_arr = np.zeros((NUM_SIZE_CLUSTER, 3)) # size clustrs
 for i in range(NUM_SIZE_CLUSTER):
@@ -222,7 +223,7 @@ class FrustumPointNetv1(nn.Module):
         if(np.isnan(stage1_center.cpu().detach().numpy()).any()):
             ipdb.set_trace()
         object_pts_xyz_new = object_pts_xyz - center_delta.view(center_delta.shape[0],-1,1).repeat(1,1,object_pts_xyz.shape[-1])
-    
+
         # 3D Box Estimation
         box_pred = self.est(object_pts_xyz_new, one_hot)#(32, 59)
 
