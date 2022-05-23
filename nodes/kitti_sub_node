@@ -4,6 +4,7 @@
 import os
 import queue
 import cv2
+import time
 import rospy
 import torch
 import operator
@@ -23,7 +24,7 @@ from frustum_pointnet.models.frustum_pointnets import FrustumPointNetv1
 from frustum_pointnet.models.model_util import g_type2class, g_class2type, g_type2onehotclass
 from frustum_pointnet.train.provider import from_prediction_to_label_format, rotate_pc_along_y
 
-
+MODEL_ROOT = "/hdd/catkin_ws/src/frustum_pointnet/src/frustum_pointnet/log/run3_carpedcyc_kitti_2022-05-05-22/acc0.641093-epoch143.pth"
 DATASET_ROOT = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training"
 IMG_TAG = "image_02"
 SEQ = "0000"
@@ -39,7 +40,7 @@ darknet_to_pointnet = {'person': 'Pedestrian', 'car': 'Car'}
 
 class KittiSubscriber:
     def __init__(self) -> None:
-        self.load_pretrained = "/hdd/catkin_ws/src/frustum_pointnet/src/frustum_pointnet/log/run3_carpedcyc_kitti_2022-05-05-22/acc0.641093-epoch143.pth"
+        self.load_pretrained = MODEL_ROOT
         self.n_classes = 3
         self.calib = utils.Calibration(SEQ_CALIB_PATH)
 
@@ -58,7 +59,7 @@ class KittiSubscriber:
         self.model.eval()
 
         # ROS
-        rospy.init_node('fpointnet_subscriber', anonymous=True)
+        rospy.init_node('frustrum_pointnet_ros', anonymous=True)
 
         # Publisher of the prediction result
         self.prediction_3d = rospy.Publisher(
@@ -77,7 +78,7 @@ class KittiSubscriber:
                  '/bounding_box_2d_publisher', darknet_msgs.BoundingBoxes, queue_size=100),
         ], queue_size=100, slop=0.2, allow_headerless=True)
 
-        ts.registerCallback(self.test_from_rgb_detection)
+        ts.registerCallback(self.detect_3d_object)
 
         rospy.spin()
 
@@ -110,7 +111,8 @@ class KittiSubscriber:
 
 
     def pub_pred_bbox(self, predictions, timestamp):
-        '''Publish predicted object bounding boxes'''
+        '''Publish predicted object 3D bounding boxes'''
+
         bbox_array_3D = jsk_msgs.BoundingBoxArray()
         bbox_array_3D.boxes = []
         bbox_array_3D.header = Header()
@@ -152,27 +154,11 @@ class KittiSubscriber:
 
         self.prediction_3d.publish(bbox_array_3D)
 
-    def test_from_rgb_detection(self, image, depth, gt_3d_list, gt_2d_list):
-        ''' Test frustum pointnets with GT 2D boxes.
-        Write test results to KITTI format label files.
-        todo (rqi): support variable number of points.
-        '''
+    def detect_3d_object(self, image, depth, gt_3d_list, gt_2d_list):
+        ''' Callback to detect 3D objects from 2D bounding box'''
 
-        '''
-        batch_data:[32, 2048, 4], pts in frustum
-        batch_label:[32, 2048], pts ins seg label in frustum
-        batch_center:[32, 3],
-        batch_hclass:[32],
-        batch_hres:[32],
-        batch_sclass:[32],
-        batch_sres:[32,3],
-        batch_rot_angle:[32],
-        batch_one_hot_vec:[32,3],
-        '''
         timestamp = image.header.stamp
         cv_image = ros_numpy.numpify(image)
-
-        print("SHAPEEEEE", cv_image.shape)
 
         bbox_2D_list = gt_2d_list.bounding_boxes
         predictions_list = []
@@ -180,6 +166,7 @@ class KittiSubscriber:
         frustums = []
 
         bbox_3D_list = gt_3d_list.boxes
+        start = time.time()
 
         for bbox_2D, bbox_3D in zip(bbox_2D_list, bbox_3D_list):
             # Get the 3D points inside the 2D bounding box
@@ -187,8 +174,8 @@ class KittiSubscriber:
             w, h = (xmax - xmin)/2, (ymax - ymin)/2
             cx, cy = xmin + w // 2, ymin + h//2
 
-            cv2.rectangle(cv_image, pt1=(xmin, ymin), pt2=(xmax, ymax), color=(
-                0, 255, 0), thickness=3, lineType=cv2.LINE_4)
+            # cv2.rectangle(cv_image, pt1=(xmin, ymin), pt2=(xmax, ymax), color=(
+            #     0, 255, 0), thickness=3, lineType=cv2.LINE_4)
             # cv2.imshow("test", cv_image)
             # cv2.waitKey(0)
 
@@ -209,12 +196,12 @@ class KittiSubscriber:
                            (pc_image_coord[:, 1] > ymin)
 
             pc_in_box_fov = pc_3d_coord[box_fov_inds, :]
-            # print_projection_cv2(pc_image_coord[box_fov_inds, :], cv_image)
 
             # Make sure class exists and pointcloud is not empty
             if bbox_2D.Class not in darknet_to_pointnet.keys() or pc_in_box_fov.shape[0] <= 1:
                 continue
             
+            # Correct classes to right format
             cls_type = darknet_to_pointnet[bbox_2D.Class]
 
             one_hot_vec = np.zeros((3))
@@ -222,7 +209,6 @@ class KittiSubscriber:
 
             input_data = {}
 
-            # Transform to frustum coordinate frame
             # Get frustrum angle
             box2d_center = np.array([cx, cy])
             uvdepth = np.zeros((1, 3))
@@ -233,6 +219,8 @@ class KittiSubscriber:
                 np.arctan2(box2d_center_rect[0, 2], box2d_center_rect[0, 0])
             frustum_angle += np.pi / 2.0
 
+            # Transform to frustum coordinate frame 
+            # F-PointNet only accepts input in camera reference frame
             pc_in_box_fov = self.calib.project_velo_to_ref(
                 pc_in_box_fov[:, 0:3])
             pc_in_box_fov_rotated = rotate_pc_along_y(
@@ -244,14 +232,10 @@ class KittiSubscriber:
             one_hot_vec = torch.tensor(
                 one_hot_vec, dtype=torch.float32).cuda()  # 1x3
 
+            # Predict
             input_data['point_cloud'] = pc_in_box_fov_rotated.transpose(2, 1)
             input_data['one_hot'] = one_hot_vec
-
-            print("point_cloud", input_data['point_cloud'].shape)
-            print("one_hot", input_data['one_hot'].shape)
-
             net_out = self.model(input_data)
-
             center = net_out['box3d_center'].cpu().detach().numpy()[0]
 
             angle_class = np.argmax(
@@ -274,12 +258,11 @@ class KittiSubscriber:
             predictions_list.append([tx, ty, tz, h, w, l, -ry])
 
             pc_in_box_fov_rotated = pc_in_box_fov_rotated.cpu().detach().numpy().squeeze()
-            # pc_in_box_fov_rotated = np.dot(pc_in_box_fov_rotated, np.transpose(rot_matrix))
-            # pc_in_box_fov_rotated = pc_in_box_fov_rotated[:,0:3]
-            # frustums.append(object_pts)
-
             frustums.append(pc_in_box_fov_rotated)
 
+
+        finish = time.time()
+        print("Framerate:", 1/(finish - start))
         self.pub_frustum(frustums, timestamp)
         self.pub_pred_bbox(predictions_list, timestamp)
 

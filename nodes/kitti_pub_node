@@ -4,18 +4,19 @@ import cv2
 import rospy
 import operator
 import numpy as np
+import ros_numpy
 
 from sensor_msgs import point_cloud2
 from std_msgs.msg import Header, String
 import jsk_recognition_msgs.msg as jsk_msgs
 import darknet_ros_msgs.msg as darknet_msgs
-from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image, PointCloud2, PointField
 
 from frustum_pointnet.kitti import kitti_util as utils
 from frustum_pointnet.models.frustum_pointnets import g_type2class
-from frustum_pointnet.kitti.kitti_object import get_lidar_in_image_fov, kitti_object
+from frustum_pointnet.kitti.kitti_object import get_lidar_in_image_fov
 
+# Classes that will be published
 pub_class = ['Car', 'Pedestrian', 'Cyclist']
 
 DATASET_ROOT = "/hdd/Thesis/SiameseTracker/dataset/KITTI/training"
@@ -43,11 +44,7 @@ class KittiPublisher:
 
         rospy.init_node('kitti_publisher', anonymous=True)
 
-        # CvBridge for OpenCV-ROS image transport
-        self.bridge = CvBridge()
-
         # Messages that will be published by the node:
-
         # - RGB images
         self.img_pub = rospy.Publisher(
             'image_publisher', Image, queue_size=1)
@@ -91,7 +88,7 @@ class KittiPublisher:
         '''Publish image as ros msg'''
         image = cv2.imread(image_name)
         h, w, c = image.shape
-        image_msg = self.bridge.cv2_to_imgmsg(image, 'bgr8')
+        image_msg = ros_numpy.msgify(Image, image, 'bgr8')
         image_msg.header.stamp = timestamp
         self.img_pub.publish(image_msg)
 
@@ -139,12 +136,14 @@ class KittiPublisher:
 
         i = self.curr_frame
 
+        # 3D Bounding Box
         gt_bbox_array_3D = []
         bbox_array_3D = jsk_msgs.BoundingBoxArray()
         bbox_array_3D.header = Header()
         bbox_array_3D.header.stamp = timestamp
         bbox_array_3D.header.frame_id = "base_link"
 
+        # 2D Bounding Box
         gt_bbox_array_2D = []
         bbox_array_2D = darknet_msgs.BoundingBoxes()
         bbox_array_2D.header = Header()
@@ -181,7 +180,7 @@ class KittiPublisher:
                 bbox_3D.pose.orientation.w = qw
 
                 # bbox_3D.label = g_type2class[obj.type]
-#                 bbox_3D.value = obj.class_id
+                # bbox_3D.value = obj.class_id
 
                 gt_bbox_array_3D.append(bbox_3D)
 

@@ -1,53 +1,57 @@
-
 import os
-os.sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
+import time
+import torch
 import argparse
 import importlib
 import numpy as np
-import torch
+from tqdm import tqdm
 import _pickle as pickle
+from torch.utils.data import DataLoader
+import frustum_pointnet.train.provider_fpointnet as provider
+from frustum_pointnet.models.model_util import FrustumPointNetLoss
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
-from models.model_util import NUM_HEADING_BIN, NUM_SIZE_CLUSTER
-import provider_fpointnet as provider
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-import ipdb
-from models.model_util import FrustumPointNetLoss
-import time
-import torch.nn.functional as F
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', type=int, default=0, help='GPU to use [default: GPU 0]')
-parser.add_argument('--num_point', type=int, default=1024, help='Point Number [default: 1024]')
-parser.add_argument('--model', default='frustum_pointnets', help='Model name [default: frustum_pointnets]')
+parser.add_argument('--gpu', type=int, default=0,
+                    help='GPU to use [default: GPU 0]')
+parser.add_argument('--num_point', type=int, default=1024,
+                    help='Point Number [default: 1024]')
+parser.add_argument('--model', default='frustum_pointnets',
+                    help='Model name [default: frustum_pointnets]')
 parser.add_argument('--model_path',
-                    default='log/1-_caronlykitti_2020-01-29-15\:39\:35/1-_caronlykitti_2020-01-29-15\:39\:35-acc0.760568-epoch065.pth',
+                    default=None,
                     help='model checkpoint file path [default: log/model.ckpt]')
-# ex. log/20200121-decay_rate=0.7-decay_step=20_caronly/20200121-decay_rate=0.7-decay_step=20_caronly-acc0.777317-epoch130.pth
-parser.add_argument('--batch_size', type=int, default=32, help='batch size for inference [default: 32]')
-parser.add_argument('--output', default='test_results', help='output file/folder name [default: test_results]')
-parser.add_argument('--data_path', default='kitti/frustum_caronly_val.pickle', help='frustum dataset pickle filepath [default: None]')
-# ex. nuscenes2kitti/frustum_caronly_CAM_FRONT_val.pickle
-parser.add_argument('--from_rgb_detection', action='store_true', help='test from dataset files from rgb detection.')
+parser.add_argument('--batch_size', type=int, default=32,
+                    help='batch size for inference [default: 32]')
+parser.add_argument('--output', default='test_results',
+                    help='output file/folder name [default: test_results]')
+parser.add_argument('--data_path', default='kitti/frustum_caronly_val.pickle',
+                    help='frustum dataset pickle filepath [default: None]')
+parser.add_argument('--from_rgb_detection', action='store_true',
+                    help='test from dataset files from rgb detection.')
 parser.add_argument('--idx_path', default='kitti/image_sets/val.txt',
-                    help='filename of txt where each line is a data idx, used for rgb detection -- write <id>.txt for all frames. [default: None]')
-# ex.nuscenes2kitti/image_sets/val.txt
-parser.add_argument('--dump_result', action='store_true', help='If true, also dump results to .pickle file')
-parser.add_argument('--return_all_loss', default=False, action='store_true', help='only return total loss default')
-parser.add_argument('--objtype', type=str, default='caronly', help='caronly or carpedcyc')
-parser.add_argument('--sensor', type=str, default='CAM_FRONT', help='only consider CAM_FRONT')
-parser.add_argument('--dataset', type=str, default='kitti', help='kitti or nuscenes or nuscenes2kitti')
-parser.add_argument('--split', type=str, default='val', help='v1.0-mini or val')
-parser.add_argument('--debug', default=False, action='store_true', help='debug mode')
-'''
-python train/test.py --model_path log/1-_caronlykitti_2020-01-29-15\:
-39\:35/1-_caronlykitti_2020-01-29-15\:39\:35-acc0.760568-epoch065.pth --data_path nuscenes2kitti/frustum_caronly_CAM_FRONT_val.pickle --idx_path nuscenes2kitti/image_sets/val.txt --dataset nuscenes2kitti
-'''
+                    help='filename of txt where each line is a data idx, used for  \
+                          rgb detection -- write <id>.txt for all frames. [default: None]')
+parser.add_argument('--dump_result', action='store_true',
+                    help='If true, also dump results to .pickle file')
+parser.add_argument('--return_all_loss', default=False,
+                    action='store_true', help='only return total loss default')
+parser.add_argument('--objtype', type=str, default='caronly',
+                    help='caronly or carpedcyc')
+parser.add_argument('--sensor', type=str, default='CAM_FRONT',
+                    help='only consider CAM_FRONT')
+parser.add_argument('--dataset', type=str, default='kitti',
+                    help='kitti or nuscenes or nuscenes2kitti')
+parser.add_argument('--split', type=str, default='val',
+                    help='v1.0-mini or val')
+parser.add_argument('--debug', default=False,
+                    action='store_true', help='debug mode')
+
 FLAGS = parser.parse_args()
 
 # Set training configurations
@@ -58,29 +62,20 @@ NUM_POINT = FLAGS.num_point
 MODEL = importlib.import_module("models." + FLAGS.model)
 NUM_CLASSES = 2
 NUM_CHANNEL = 4
+
 if FLAGS.objtype == 'carpedcyc':
     n_classes = 3
 elif FLAGS.objtype == 'caronly':
     n_classes = 1
 
 # Loss
-Loss = FrustumPointNetLoss()#return_all=FLAGS.return_all_loss)
+Loss = FrustumPointNetLoss()  # return_all=FLAGS.return_all_loss)
 
 # Load Frustum Datasets.
 if FLAGS.dataset == 'kitti':
     if FLAGS.data_path == None:
-        overwritten_data_path = 'kitti/frustum_' + FLAGS.objtype + '_' + FLAGS.split + '.pickle'
-    else:
-        overwritten_data_path = FLAGS.data_path
-    TEST_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split='val',
-                                           rotate_to_center=True, one_hot=True,
-                                           overwritten_data_path=overwritten_data_path,
-                                           from_rgb_detection=FLAGS.from_rgb_detection)
-elif FLAGS.dataset == 'nuscenes2kitti':
-    SENSOR = FLAGS.sensor
-    overwritten_data_path_prefix = 'nuscenes2kitti/frustum_' + FLAGS.objtype + '_' + SENSOR + '_'
-    if FLAGS.data_path == None:
-        overwritten_data_path = overwritten_data_path_prefix + FLAGS.split + '.pickle'
+        overwritten_data_path = 'kitti/frustum_' + \
+            FLAGS.objtype + '_' + FLAGS.split + '.pickle'
     else:
         overwritten_data_path = FLAGS.data_path
     TEST_DATASET = provider.FrustumDataset(npoints=NUM_POINT, split='val',
@@ -91,13 +86,14 @@ else:
     print('Unknown dataset: %s' % (FLAGS.dataset))
     exit(-1)
 
-test_dataloader = DataLoader(TEST_DATASET, batch_size=BATCH_SIZE, shuffle=False, \
+test_dataloader = DataLoader(TEST_DATASET, batch_size=BATCH_SIZE, shuffle=False,
                              num_workers=8, pin_memory=True)
 # Model
 if FLAGS.model == 'frustum_pointnets':
     from models.frustum_pointnets import FrustumPointNetv1
 
-    FrustumPointNet = FrustumPointNetv1(n_classes=n_classes,n_channel=3).cuda()
+    FrustumPointNet = FrustumPointNetv1(
+        n_classes=n_classes, n_channel=3).cuda()
 
 # Pre-trained Model
 pth = torch.load(FLAGS.model_path)
@@ -116,13 +112,15 @@ def softmax(x):
     return probs
 
 
-def write_detection_results(result_dir, id_list, type_list, box2d_list, center_list, \
-                            heading_cls_list, heading_res_list, \
-                            size_cls_list, size_res_list, \
+def write_detection_results(result_dir, id_list, type_list, box2d_list, center_list,
+                            heading_cls_list, heading_res_list,
+                            size_cls_list, size_res_list,
                             rot_angle_list, score_list):
     ''' Write frustum pointnets results to KITTI format label files. '''
-    if result_dir is None: return
-    results = {}  # map from idx to list of strings, each string is a line (without \n)
+    if result_dir is None:
+        return
+    # map from idx to list of strings, each string is a line (without \n)
+    results = {}
     for i in range(len(center_list)):
         idx = id_list[i]
         output_str = "0 0 " + type_list[i] + " -1 -1 -10 "
@@ -137,14 +135,18 @@ def write_detection_results(result_dir, id_list, type_list, box2d_list, center_l
         if score < -1e7:
             continue
         """
-        output_str += "%f %f %f %f %f %f %f %f" % (h, w, l, tx, ty, tz, ry, score)
-        if idx not in results: results[idx] = []
+        output_str += "%f %f %f %f %f %f %f %f" % (
+            h, w, l, tx, ty, tz, ry, score)
+        if idx not in results:
+            results[idx] = []
         results[idx].append(output_str)
 
     # Write TXT files
-    if not os.path.exists(result_dir): os.makedirs(result_dir)
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
     output_dir = os.path.join(result_dir, 'data')
-    if not os.path.exists(output_dir): os.makedirs(output_dir)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     for idx in results:
         pred_filename = os.path.join(output_dir, '%06d.txt' % (idx))
         fout = open(pred_filename, 'w')
@@ -189,6 +191,7 @@ def test_one_epoch(model, loader):
     test_acc = 0.0
     test_iou3d_acc = 0.0
     eval_time = 0.0
+
     if FLAGS.return_all_loss:
         test_mask_loss = 0.0
         test_center_loss = 0.0
@@ -205,7 +208,8 @@ def test_one_epoch(model, loader):
     max_info = np.zeros(3)
     min_info = np.zeros(3)
     mean_info = np.zeros(3)
-    for i, data in tqdm(enumerate(loader), \
+
+    for i, data in tqdm(enumerate(loader),
                         total=len(loader), smoothing=0.9):
         # for debug
         if FLAGS.debug == True:
@@ -225,11 +229,11 @@ def test_one_epoch(model, loader):
         '''
         # 1. Load data
         point_set, seg, box3d_center, angle_class, angle_residual, \
-                size_class, size_residual, rot_angle, one_hot_vec = data
+            size_class, size_residual, rot_angle, one_hot_vec = data
 
         labels = {}
         input_data = {}
-        input_data['point_cloud'] = point_set.transpose(2,1).float().cuda()
+        input_data['point_cloud'] = point_set.transpose(2, 1).float().cuda()
         input_data['rot_angle'] = rot_angle.float().cuda()
         input_data['one_hot'] = one_hot_vec.float().cuda()
 
@@ -237,48 +241,31 @@ def test_one_epoch(model, loader):
         labels['box3d_center_label'] = box3d_center.float().cuda()
         labels['size_class_label'] = size_class.long().cuda()
         labels['size_residual_label'] = size_residual.float().cuda()
-        labels['angle_class_label']  = angle_class.long().cuda()
+        labels['angle_class_label'] = angle_class.long().cuda()
         labels['angle_residual_label'] = angle_residual.float().cuda()
 
         bs = input_data['point_cloud'].shape[0]
 
         FrustumPointNet = model.eval()
 
+        # Predict
         eval_t1 = time.perf_counter()
         net_out = FrustumPointNet(input_data)
-        # logits:[32, 1024, 2] , mask:[32, 1024]
         eval_t2 = time.perf_counter()
         eval_time += (eval_t2 - eval_t1)
 
-        # 3. Compute Loss
-        losses = Loss(net_out, labels)
-        
-        test_total_loss += losses['total_loss'].item()
-        if FLAGS.return_all_loss:
-            test_mask_loss          += losses['mask_loss'].item() 
-            test_center_loss        += losses['center_loss'].item() 
-            test_heading_class_loss += losses['heading_class_loss'].item() 
-            test_size_class_loss    += losses['size_class_loss'].item() 
-            test_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item() 
-            test_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item() 
-            test_stage1_center_loss += losses['stage1_center_loss'].item() 
-            test_corners_loss       += losses['corners_loss'].item()
-
-        # 4. compute seg acc, IoU and acc(IoU)
-        correct = torch.argmax(net_out['logits'].detach().cpu(), 2).eq(labels['seg_label'].detach().cpu().long()).cpu().numpy()
-        accuracy = np.sum(correct) / float(input_data['point_cloud'].shape[-1])
-        test_acc += accuracy
-
         # predictions
         logits = net_out['logits'].cpu().detach().numpy()
-        center = net_out['box3d_center'].cpu().detach().numpy()#
+        center = net_out['box3d_center'].cpu().detach().numpy()
         stage1_center = net_out['stage1_center'].cpu().detach().numpy()
         heading_scores = net_out['heading_scores'].cpu().detach().numpy()
-        heading_residuals_normalized = net_out['heading_residual_normalized'].cpu().detach().numpy()
+        heading_residuals_normalized = net_out['heading_residual_normalized'].cpu(
+        ).detach().numpy()
         heading_residuals = net_out['heading_residual'].cpu().detach().numpy()
         size_scores = net_out['size_scores'].cpu().detach().numpy()
         size_residuals = net_out['size_residual'].cpu().detach().numpy()
-        size_residuals_normalized = net_out['size_residual_normalized'].cpu().detach().numpy()#
+        size_residuals_normalized = net_out['size_residual_normalized'].cpu(
+        ).detach().numpy()
 
         # labels
         batch_rot_angle = input_data['rot_angle'].cpu().detach().numpy()
@@ -287,6 +274,29 @@ def test_one_epoch(model, loader):
         batch_hres = labels['angle_residual_label'].cpu().detach().numpy()
         batch_sclass = labels['size_class_label'].cpu().detach().numpy()
         batch_sres = labels['size_residual_label'].cpu().detach().numpy()
+
+        # 3. Compute Loss
+        losses = Loss(net_out, labels)
+
+        test_total_loss += losses['total_loss'].item()
+
+        if FLAGS.return_all_loss:
+            test_mask_loss += losses['mask_loss'].item()
+            test_center_loss += losses['center_loss'].item()
+            test_heading_class_loss += losses['heading_class_loss'].item()
+            test_size_class_loss += losses['size_class_loss'].item()
+            test_heading_residuals_normalized_loss += losses['heading_residual_normalized_loss'].item(
+            )
+            test_size_residuals_normalized_loss += losses['size_residual_normalized_loss'].item(
+            )
+            test_stage1_center_loss += losses['stage1_center_loss'].item()
+            test_corners_loss += losses['corners_loss'].item()
+
+        # 4. compute seg acc, IoU and acc(IoU)
+        correct = torch.argmax(net_out['logits'].detach().cpu(), 2).eq(
+            labels['seg_label'].detach().cpu().long()).cpu().numpy()
+        accuracy = np.sum(correct) / float(input_data['point_cloud'].shape[-1])
+        test_acc += accuracy
 
         iou2ds, iou3ds = provider.compute_box3d_iou(
             center,
@@ -299,6 +309,7 @@ def test_one_epoch(model, loader):
             batch_hres,
             batch_sclass,
             batch_sres)
+
         test_iou2d += np.sum(iou2ds)
         test_iou3d += np.sum(iou3ds)
         test_iou3d_acc += np.sum(iou3ds >= 0.7)
@@ -307,11 +318,10 @@ def test_one_epoch(model, loader):
         batch_output = np.argmax(logits, 2)  # mask#torch.Size([32, 1024])
         batch_center_pred = center  # _boxnet#torch.Size([32, 3])
         batch_hclass_pred = np.argmax(heading_scores, 1)  # (32,)
-        batch_hres_pred = np.array([heading_residuals[j, batch_hclass_pred[j]] \
+        batch_hres_pred = np.array([heading_residuals[j, batch_hclass_pred[j]]
                                     for j in range(input_data['point_cloud'].shape[0])])  # (32,)
-        # batch_size_cls,batch_size_res
         batch_sclass_pred = np.argmax(size_scores, 1)  # (32,)
-        batch_sres_pred = np.vstack([size_residuals[j, batch_sclass_pred[j], :] \
+        batch_sres_pred = np.vstack([size_residuals[j, batch_sclass_pred[j], :]
                                      for j in range(input_data['point_cloud'].shape[0])])  # (32,3)
 
         # batch_scores
@@ -320,14 +330,15 @@ def test_one_epoch(model, loader):
         mask_mean_prob = np.sum(batch_seg_prob * batch_seg_mask, 1)  # B,
 
         #mask_mean_prob = mask_mean_prob / (np.sum(batch_seg_mask, 1))
-        mask_mean_prob = mask_mean_prob / (np.sum(batch_seg_mask, 1) + 1e-7)  # B,
+        mask_mean_prob = mask_mean_prob / \
+            (np.sum(batch_seg_mask, 1) + 1e-7)  # B,
 
         heading_prob = np.max(softmax(heading_scores), 1)  # B
         size_prob = np.max(softmax(size_scores), 1)  # B,
         mask_max_prob = np.max(batch_seg_prob * batch_seg_mask, 1)
-        batch_scores = mask_max_prob
+        # batch_scores = mask_max_prob
 
-        # batch_scores = np.log(mask_mean_prob) + np.log(heading_prob) + np.log(size_prob)
+        batch_scores = np.log(mask_mean_prob) + np.log(heading_prob) + np.log(size_prob)
         # batch_scores = np.log(heading_prob) + np.log(size_prob)
         # batch_scores = mask_mean_prob/3 + heading_prob/3 + size_prob/3
         # batch_scores = np.ones_like(mask_mean_prob) + 0.1
@@ -339,7 +350,6 @@ def test_one_epoch(model, loader):
             seg_list.append(labels['seg_label'][j, ...])
             segp_list.append(batch_output[j, ...])
 
-
             center_list.append(batch_center_pred[j, :])
             heading_cls_list.append(batch_hclass_pred[j])
             heading_res_list.append(batch_hres_pred[j])
@@ -347,12 +357,13 @@ def test_one_epoch(model, loader):
             size_res_list.append(batch_sres_pred[j, :])
             rot_angle_list.append(batch_rot_angle[j])
 
-
-            if batch_scores[j] < -1000000000: batch_scores[j] = -1000000000
+            if batch_scores[j] < -1000000000:
+                batch_scores[j] = -1000000000
             score_list.append(batch_scores[j])
             pos_cnt += np.sum(labels['seg_label'][j, :].cpu().detach().numpy())
             pos_pred_cnt += np.sum(batch_output[j, :])
-            pts_np = input_data['point_cloud'][j, :3, :].cpu().detach().numpy()  # (3,1024)
+            pts_np = input_data['point_cloud'][j, :3,
+                                               :].cpu().detach().numpy()  # (3,1024)
             max_xyz = np.max(pts_np, axis=1)
             max_info = np.maximum(max_info, max_xyz)
             min_xyz = np.min(pts_np, axis=1)
@@ -392,7 +403,7 @@ def test_one_epoch(model, loader):
     # there is a TXT file
     output_dir = os.path.join(result_dir, 'data')
     if FLAGS.idx_path is not None:
-        to_fill_filename_list = [line.rstrip() + '.txt' \
+        to_fill_filename_list = [line.rstrip() + '.txt'
                                  for line in open(FLAGS.idx_path)]
         fill_files(output_dir, to_fill_filename_list)
 
@@ -401,7 +412,8 @@ def test_one_epoch(model, loader):
     print('Average pos prediction ratio: %f' % (pos_pred_cnt / float(all_cnt)))
     print('Average npoints: %f' % (float(all_cnt) / len(ps_list)))
     mean_info = mean_info / len(ps_list) / FLAGS.num_point
-    print('Mean points: x%f y%f z%f' % (mean_info[0], mean_info[1], mean_info[2]))
+    print('Mean points: x%f y%f z%f' %
+          (mean_info[0], mean_info[1], mean_info[2]))
     print('Max points: x%f y%f z%f' % (max_info[0], max_info[1], max_info[2]))
     print('Min points: x%f y%f z%f' % (min_info[0], min_info[1], min_info[2]))
     '''
@@ -484,24 +496,24 @@ def test_one_epoch(model, loader):
     '''
     if FLAGS.return_all_loss:
         return test_total_loss / test_n_samples, \
-               test_iou2d / test_n_samples, \
-               test_iou3d / test_n_samples, \
-               test_acc / test_n_samples, \
-               test_iou3d_acc / test_n_samples, \
-               test_mask_loss / test_n_samples, \
-               test_center_loss / test_n_samples, \
-               test_heading_class_loss / test_n_samples, \
-               test_size_class_loss / test_n_samples, \
-               test_heading_residuals_normalized_loss / test_n_samples, \
-               test_size_residuals_normalized_loss / test_n_samples, \
-               test_stage1_center_loss / test_n_samples, \
-               test_corners_loss / test_n_samples
+            test_iou2d / test_n_samples, \
+            test_iou3d / test_n_samples, \
+            test_acc / test_n_samples, \
+            test_iou3d_acc / test_n_samples, \
+            test_mask_loss / test_n_samples, \
+            test_center_loss / test_n_samples, \
+            test_heading_class_loss / test_n_samples, \
+            test_size_class_loss / test_n_samples, \
+            test_heading_residuals_normalized_loss / test_n_samples, \
+            test_size_residuals_normalized_loss / test_n_samples, \
+            test_stage1_center_loss / test_n_samples, \
+            test_corners_loss / test_n_samples
     else:
         return test_total_loss / test_n_samples, \
-               test_iou2d / test_n_samples, \
-               test_iou3d / test_n_samples, \
-               test_acc / test_n_samples, \
-               test_iou3d_acc / test_n_samples
+            test_iou2d / test_n_samples, \
+            test_iou3d / test_n_samples, \
+            test_acc / test_n_samples, \
+            test_iou3d_acc / test_n_samples
 
 
 def test_from_rgb_detection(model, loader):
@@ -543,7 +555,7 @@ def test_from_rgb_detection(model, loader):
         test_stage1_center_loss = 0.0
         test_corners_loss = 0.0
     '''
-    for i, data in tqdm(enumerate(loader), \
+    for i, data in tqdm(enumerate(loader),
                         total=len(loader), smoothing=0.9):
         # for debug
         if FLAGS.debug == True:
@@ -563,9 +575,9 @@ def test_from_rgb_detection(model, loader):
         '''
         # 1. Load data
         batch_data, \
-        batch_rot_angle, \
-        batch_rgb_prob, \
-        batch_one_hot_vec = data
+            batch_rot_angle, \
+            batch_rgb_prob, \
+            batch_one_hot_vec = data
 
         # return point_set, rot_angle, self.prob_list[index], one_hot_vec
         batch_data = batch_data.transpose(2, 1).float().cuda()
@@ -583,8 +595,8 @@ def test_from_rgb_detection(model, loader):
         model = model.eval()
         eval_t1 = time.perf_counter()
         logits, mask, stage1_center, center_boxnet, \
-        heading_scores, heading_residuals_normalized, heading_residuals, \
-        size_scores, size_residuals_normalized, size_residuals, center = \
+            heading_scores, heading_residuals_normalized, heading_residuals, \
+            size_scores, size_residuals_normalized, size_residuals, center = \
             model(batch_data, batch_one_hot_vec)
         # logits:[32, 1024, 2] , mask:[32, 1024]
         eval_t2 = time.perf_counter()
@@ -668,11 +680,11 @@ def test_from_rgb_detection(model, loader):
         batch_output = np.argmax(logits, 2)  # mask#torch.Size([32, 1024])
         batch_center_pred = center  # _boxnet#torch.Size([32, 3])
         batch_hclass_pred = np.argmax(heading_scores, 1)  # (32,)
-        batch_hres_pred = np.array([heading_residuals[j, batch_hclass_pred[j]] \
+        batch_hres_pred = np.array([heading_residuals[j, batch_hclass_pred[j]]
                                     for j in range(batch_data.shape[0])])  # (32,)
         # batch_size_cls,batch_size_res
         batch_sclass_pred = np.argmax(size_scores, 1)  # (32,)
-        batch_sres_pred = np.vstack([size_residuals[j, batch_sclass_pred[j], :] \
+        batch_sres_pred = np.vstack([size_residuals[j, batch_sclass_pred[j], :]
                                      for j in range(batch_data.shape[0])])  # (32,3)
 
         # batch_scores
@@ -698,7 +710,7 @@ def test_from_rgb_detection(model, loader):
             size_res_list.append(batch_sres_pred[j, :])
             rot_angle_list.append(batch_rot_angle[j])
             # score_list.append(batch_scores[j]) # car_detection_3d AP: 81.882027 70.021523 63.075848
-            score_list.append(batch_rgb_prob[j]) #
+            score_list.append(batch_rgb_prob[j])
             onehot_list.append(batch_one_hot_vec[j])
 
     '''
@@ -735,7 +747,7 @@ def test_from_rgb_detection(model, loader):
     # there is a TXT file
     output_dir = os.path.join(result_dir, 'data')
     if FLAGS.idx_path is not None:
-        to_fill_filename_list = [line.rstrip() + '.txt' \
+        to_fill_filename_list = [line.rstrip() + '.txt'
                                  for line in open(FLAGS.idx_path)]
         fill_files(output_dir, to_fill_filename_list)
 
@@ -780,26 +792,29 @@ if __name__ == '__main__':
         # test one epoch from 2d gt
         if FLAGS.return_all_loss:
             test_total_loss, test_iou2d, test_iou3d, test_acc, test_iou3d_acc, \
-            test_mask_loss, \
-            test_center_loss, \
-            test_heading_class_loss, \
-            test_size_class_loss, \
-            test_heading_residuals_normalized_loss, \
-            test_size_residuals_normalized_loss, \
-            test_stage1_center_loss, \
-            test_corners_loss \
+                test_mask_loss, \
+                test_center_loss, \
+                test_heading_class_loss, \
+                test_size_class_loss, \
+                test_heading_residuals_normalized_loss, \
+                test_size_residuals_normalized_loss, \
+                test_stage1_center_loss, \
+                test_corners_loss \
                 = \
                 test_one_epoch(FrustumPointNet, test_dataloader)
         else:
             test_total_loss, test_iou2d, test_iou3d, test_acc, test_iou3d_acc = \
                 test_one_epoch(FrustumPointNet, test_dataloader)
-    blue = lambda x: '\033[94m' + x + '\033[0m'
+
+    def blue(x): return '\033[94m' + x + '\033[0m'
     if (not FLAGS.from_rgb_detection):
         print('test from 2d gt: Done')
         print('%s loss: %.6f' % (blue('test'), test_total_loss))
         print('%s segmentation accuracy: %.6f' % (blue('test'), test_acc))
-        print('%s box IoU(ground/3D): %.6f/%.6f' % (blue('test'), test_iou2d, test_iou3d))
-        print('%s box estimation accuracy (IoU=0.7): %.6f' % (blue('test'), test_iou3d_acc))
+        print('%s box IoU(ground/3D): %.6f/%.6f' %
+              (blue('test'), test_iou2d, test_iou3d))
+        print('%s box estimation accuracy (IoU=0.7): %.6f' %
+              (blue('test'), test_iou3d_acc))
     else:
         print('test from rgb detection: Done')
     # 1.from rgb(score_list.append(batch_rgb_prob[j]))

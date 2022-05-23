@@ -3,4 +3,11 @@ src/frustum_pointnet/log/
 src/frustum_pointnet/runs/
 src/frustum_pointnet/kitti/*.pickle
 */__pycache__
-
+src/frustum_pointnet/kitti/groundtruth/training/*
+src/frustum_pointnet/train/detection_results_v1/*
+src/test_results/data/*
+src/test_results/*
+src/frustum_pointnet/train/kitti_eval/*
+src/frustum_pointnet/train/__pycache__/*
+src/frustum_pointnet/__pycache__/*
+src/frustum_pointnet/train/log_train.txt

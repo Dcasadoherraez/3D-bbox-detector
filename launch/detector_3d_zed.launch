@@ -22,6 +22,7 @@
     <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0 0 0 1 map base_link 100" />
 
     <!-- #### KITTI Image Publisher #### -->
-    <node name="kitti_publisher" pkg="frustum_pointnet" type="kitti_pub_node" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay); $0 $@' " />
+    <arg name="path" default="/hdd/Thesis/SiameseTracker/dataset/ExperimentRoom/_2022-05-06-18-05-33.bag" />
+    <node pkg="rosbag" type="play" name="rosbag_play" args="--clock $(arg path)"/> 
     
 </launch>

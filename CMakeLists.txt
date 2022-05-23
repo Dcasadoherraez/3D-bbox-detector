@@ -45,7 +45,7 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 catkin_install_python(PROGRAMS 
-  nodes/fpointnet_sub_node
+  nodes/kitti_sub_node
   nodes/kitti_pub_node
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
