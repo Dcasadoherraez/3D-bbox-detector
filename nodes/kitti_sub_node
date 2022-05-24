@@ -61,6 +61,7 @@ class KittiSubscriber:
         # ROS
         rospy.init_node('frustrum_pointnet_ros', anonymous=True)
 
+
         # Publisher of the prediction result
         self.prediction_3d = rospy.Publisher(
             'prediction_3d_publisher', jsk_msgs.BoundingBoxArray, queue_size=1)
