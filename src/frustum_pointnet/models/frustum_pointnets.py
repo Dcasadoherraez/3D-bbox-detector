@@ -235,17 +235,17 @@ class FrustumPointNetv1(nn.Module):
         box3d_center = center_boxnet_delta + stage1_center #bs,3
 
         net_out = {}
-        net_out['logits'] = logits
-        net_out['box3d_center'] = box3d_center
-        net_out['stage1_center'] = stage1_center
-        net_out['heading_scores'] = heading_scores
-        net_out['heading_residual_normalized'] = heading_residual_normalized
-        net_out['heading_residual'] = heading_residual
-        net_out['size_scores'] = size_scores
-        net_out['size_residual_normalized'] = size_residual_normalized
-        net_out['size_residual'] = size_residual
+        net_out['logits'] = logits.cpu().detach()
+        net_out['box3d_center'] = box3d_center.cpu().detach()
+        net_out['stage1_center'] = stage1_center.cpu().detach()
+        net_out['heading_scores'] = heading_scores.cpu().detach()
+        net_out['heading_residual_normalized'] = heading_residual_normalized.cpu().detach()
+        net_out['heading_residual'] = heading_residual.cpu().detach()
+        net_out['size_scores'] = size_scores.cpu().detach()
+        net_out['size_residual_normalized'] = size_residual_normalized.cpu().detach()
+        net_out['size_residual'] = size_residual.cpu().detach()
 
-        net_out['object_points'] = object_pts_xyz.transpose(2,1)
+        net_out['object_points'] = object_pts_xyz.transpose(2,1).cpu().detach()
 
         return net_out
 

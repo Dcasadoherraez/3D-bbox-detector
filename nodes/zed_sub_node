@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+
+#!/usr/bin/env pythonimport cv2
+import os
+import queue
+from xml.sax.handler import property_interning_dict
+import cv2
+import time
+
+from matplotlib.transforms import Transform
+import rospy
+import torch
+import operator
+import ros_numpy
+import numpy as np
+import message_filters
+
+import tf2_ros
+from sensor_msgs import point_cloud2
+from std_msgs.msg import String, Header
+import jsk_recognition_msgs.msg as jsk_msgs
+import darknet_ros_msgs.msg as darknet_msgs
+from geometry_msgs.msg import PoseArray, Pose
+from sensor_msgs.msg import Image, PointCloud2, PointField, CameraInfo
+
+from frustum_pointnet.ros.sub_node_class import FPointnetNode
+from frustum_pointnet.models.frustum_pointnets import FrustumPointNetv1
+from frustum_pointnet.models.model_util import g_type2onehotclass
+from frustum_pointnet.train.provider import from_prediction_to_label_format, rotate_pc_along_y, rotate_pc_along_y_rviz
+
+MODEL_ROOT = "/hdd/catkin_ws/src/frustum_pointnet/src/frustum_pointnet/log/run3_carpedcyc_kitti_2022-05-05-22/acc0.641093-epoch143.pth"
+darknet_to_pointnet = {'person': 'Pedestrian', 'car': 'Car'}
+CAMERA_FRAME = 'zed2i_left_camera_frame'
+RECT_FRAME = 'zed2i_left_camera_optical_frame'
+BASE_FRAME = 'base_link'
+
+
+class LeftCameraParameters:
+    def __init__(self) -> None:
+        self.is_vertical = True
+
+        self.distortion_model = 'plumb_bob'
+        self.frame_id = 'zed2i_left_camera_optical_frame'
+        self.height = 720
+        self.width = 1080
+        self.D = [0.0, 0.0, 0.0, 0.0, 0.0]
+        self.K = [520.5943603515625, 0.0, 637.086669921875, 0.0,
+                  520.5943603515625, 352.2345886230469, 0.0, 0.0, 1.0]
+        self.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        self.P = [520.5943603515625, 0.0, 637.086669921875, 0.0, 0.0,
+                  520.5943603515625, 352.2345886230469, 0.0, 0.0, 0.0, 1.0, 0.0]
+
+        self.fu = self.K[0]
+        self.fv = self.K[4]
+        self.cu = self.K[2]
+        self.cv = self.K[5]
+
+        if self.is_vertical:
+            self.fu, self.fv = self.fv, self.fu
+            self.cu, self.cv = self.cv, self.cu
+
+        self.bx = 0
+        self.by = 0
+
+
+class ZedSubscriber(FPointnetNode):
+    def __init__(self, model_root, n_classes) -> None:
+        super().__init__(model_root, n_classes)
+
+        # ROS
+        rospy.init_node('frustrum_pointnet_ros', anonymous=True)
+
+        # Transform listener
+        self.tfBuffer = tf2_ros.Buffer()
+        self.listener = tf2_ros.TransformListener(self.tfBuffer)
+
+        transf_rect2cam = None
+        transf_horizontal2vertical = None
+        transf_pointcloud2fpointnet = None
+
+        while transf_rect2cam == None or transf_horizontal2vertical == None or transf_pointcloud2fpointnet == None:
+            # Transform pointcloud
+            try:
+                transf_rect2cam = self.tfBuffer.lookup_transform(
+                    RECT_FRAME, CAMERA_FRAME, rospy.Time(0))
+                transf_horizontal2vertical = self.tfBuffer.lookup_transform(
+                    'pointcloud_frame', CAMERA_FRAME, rospy.Time())
+                transf_pointcloud2fpointnet = self.tfBuffer.lookup_transform(
+                    'pointcloud_frame', 'fpointnet_frame', rospy.Time())
+
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException):
+                print("No transform received")
+                time.sleep(1)
+                continue
+
+        # Get pc to rect transform
+        rot = self.get_rotation_matrix(transf_rect2cam)
+        trans = self.get_translation(transf_rect2cam)
+
+        self.pc_to_rect = np.zeros((4, 4))
+        self.pc_to_rect[:3, :3] = rot
+        self.pc_to_rect[:3, 3] = trans
+        self.pc_to_rect[3, :] = np.array([0, 0, 0, 1])
+
+        # Get base to cam transform
+        print(transf_horizontal2vertical)
+        rot = self.get_rotation_matrix(transf_horizontal2vertical)
+        trans = self.get_translation(transf_horizontal2vertical)
+
+        self.horizontal_to_vertical = np.zeros((4, 4))
+        self.horizontal_to_vertical[:3, :3] = rot
+        self.horizontal_to_vertical[:3, 3] = trans
+        self.horizontal_to_vertical[3, :] = np.array([0, 0, 0, 1])
+
+        self.camera_height = transf_horizontal2vertical.transform.translation.z
+
+        # Get pointcloud to fpointnet transform
+        rot = self.get_rotation_matrix(transf_pointcloud2fpointnet)
+        trans = self.get_translation(transf_pointcloud2fpointnet)
+
+        self.transf_pointcloud2fpointnet = np.zeros((4, 4))
+        self.transf_pointcloud2fpointnet[:3, :3] = rot
+        self.transf_pointcloud2fpointnet[:3, 3] = trans
+        self.transf_pointcloud2fpointnet[3, :] = np.array([0, 0, 0, 1])
+
+        # ROS topic parameters
+        image_topic_sub = rospy.get_param('fpointnet_image_topic_sub')
+        depth_topic_sub = rospy.get_param('fpointnet_depth_topic_sub')
+        bbox_2d_topic_sub = rospy.get_param('fpointnet_bbox_2d_topic_sub')
+        bbox_3d_topic_pub = rospy.get_param('fpointnet_bbox_3d_topic_pub')
+        frustum_pc_pub = rospy.get_param('fpointnet_frustum_topic_pub')
+        pc_pub = rospy.get_param('fpointnet_pc_topic_pub')
+
+        # Publisher of the prediction result
+        self.prediction_3d_pub = rospy.Publisher(
+            bbox_3d_topic_pub, jsk_msgs.BoundingBoxArray, queue_size=1)
+        self.frustum_pc_pub = rospy.Publisher(
+            frustum_pc_pub, PointCloud2, queue_size=1)
+        self.pointcloud_pub = rospy.Publisher(
+            pc_pub, PointCloud2, queue_size=1)
+
+        self.left_camera_info = LeftCameraParameters()
+
+        # Subscriber to the data stream
+        ts = message_filters.ApproximateTimeSynchronizer([
+            message_filters.Subscriber(image_topic_sub, Image, queue_size=10),
+            message_filters.Subscriber(
+                depth_topic_sub, PointCloud2, queue_size=10),
+            message_filters.Subscriber(
+                bbox_2d_topic_sub, darknet_msgs.BoundingBoxes, queue_size=10),
+        ], queue_size=10, slop=0.2)
+
+        ts.registerCallback(self.detect_3d_object)
+
+        rospy.spin()
+
+    def transform_horizontal_to_vertical(self, pointcloud):
+        '''Transform the pointcloud from left_camera_frame to base_link frame'''
+        return np.transpose(np.matmul(self.horizontal_to_vertical, np.transpose(pointcloud)))
+
+    def project_fpointnet_to_pc(self, pointcloud):
+        '''Transform from fpointnet frame to pc frame'''
+        return np.transpose(np.matmul(self.transf_pointcloud2fpointnet, np.transpose(pointcloud)))
+
+    def project_pc_to_fpointnet(self, pointcloud):
+        '''Transform from pointcloud frame to fpointnet frame'''
+        return np.transpose(np.matmul(np.linalg.inv(self.transf_pointcloud2fpointnet), np.transpose(pointcloud)))
+
+    def project_pc_to_image(self, pointcloud):
+        '''Project from camera frame to image u,v coordinates'''
+        pointcloud = self.project_fpointnet_to_pc(pointcloud)
+        pointcloud_rect = self.project_pc_to_rect(pointcloud)
+        return self.project_rect_to_image(pointcloud_rect)
+
+    def project_pc_to_rect(self, pointcloud):
+        '''Convert from camera frame to rectified camera frame'''
+        return np.transpose(np.matmul(self.pc_to_rect, np.transpose(pointcloud)))
+
+    def project_rect_to_image(self, pointcloud):
+        '''Project from rectified camera frame to image u,v coordinates'''
+        n = pointcloud.shape[0]
+        u = pointcloud[:, 0] / pointcloud[:, 2] * \
+            self.left_camera_info.fu + self.left_camera_info.cu
+        v = pointcloud[:, 1] / pointcloud[:, 2] * \
+            self.left_camera_info.fv + self.left_camera_info.cv
+
+        pts_2d = np.zeros((n, 2))
+        pts_2d[:, 0] = u
+        pts_2d[:, 1] = v
+
+        return pts_2d
+
+    def project_image_to_rect(self, uv_depth):
+        ''' Project from image u,v coordinates to rectified camera frame'''
+        n = uv_depth.shape[0]
+        x = ((uv_depth[:, 0]-self.left_camera_info.cu)
+             * uv_depth[:, 2])/self.left_camera_info.fu
+        y = ((uv_depth[:, 1]-self.left_camera_info.cv)
+             * uv_depth[:, 2])/self.left_camera_info.fv
+        pts_3d_rect = np.zeros((n, 3))
+        pts_3d_rect[:, 0] = x
+        pts_3d_rect[:, 1] = y
+        pts_3d_rect[:, 2] = uv_depth[:, 2]
+        return pts_3d_rect
+
+    def get_rotation_matrix(self, transf):
+        '''Get rotation matrix from tf transform'''
+
+        q0 = transf.transform.rotation.w
+        q1 = transf.transform.rotation.x
+        q2 = transf.transform.rotation.y
+        q3 = transf.transform.rotation.z
+
+        # First row of the rotation matrix
+        r00 = 2 * (q0 * q0 + q1 * q1) - 1
+        r01 = 2 * (q1 * q2 - q0 * q3)
+        r02 = 2 * (q1 * q3 + q0 * q2)
+
+        # Second row of the rotation matrix
+        r10 = 2 * (q1 * q2 + q0 * q3)
+        r11 = 2 * (q0 * q0 + q2 * q2) - 1
+        r12 = 2 * (q2 * q3 - q0 * q1)
+
+        # Third row of the rotation matrix
+        r20 = 2 * (q1 * q3 - q0 * q2)
+        r21 = 2 * (q2 * q3 + q0 * q1)
+        r22 = 2 * (q0 * q0 + q3 * q3) - 1
+
+        # 3x3 rotation matrix
+        rot_matrix = np.array([[r00, r01, r02],
+                               [r10, r11, r12],
+                               [r20, r21, r22]])
+
+        return rot_matrix
+
+    def get_translation(self, transf):
+        '''Get translation vector from tf transform'''
+        tx = transf.transform.translation.x
+        ty = transf.transform.translation.y
+        tz = transf.transform.translation.z
+        trans = np.array([tx, ty, tz])
+
+        return trans
+
+    def rotate_pc_around_z(self, pc, rot_angle):
+        cosval = np.cos(rot_angle)
+        sinval = np.sin(rot_angle)
+        rotmat = np.array(
+            [[cosval, -sinval, 0], [sinval, cosval, 0], [0, 0, 1]])
+        pc[:, :3] = np.dot(pc[:, :3], np.transpose(rotmat))
+        return pc
+
+    def detect_3d_object(self, image, depth, bbox_2d_list):
+        ''' Callback to detect 3D objects from 2D bounding box'''
+
+        timestamp = image.header.stamp
+
+        predictions_list = []
+        frustums = []
+
+        start = time.time()
+
+        bbox_2D_list = bbox_2d_list.bounding_boxes
+        cv_image = ros_numpy.numpify(image)
+        pc = ros_numpy.numpify(depth)
+        pc_3d_coord = np.zeros((pc.shape[0], 4), dtype=np.float32)
+        pc_3d_coord[:, 0] = pc['x']
+        pc_3d_coord[:, 1] = pc['y']
+        pc_3d_coord[:, 2] = pc['z']
+        pc_3d_coord[:, 3] = np.ones((pc.shape[0],))
+
+        pc_3d_coord_vertical = self.transform_horizontal_to_vertical(
+            pc_3d_coord)
+        pc_3d_coord_fpointnet = self.project_pc_to_fpointnet(
+            pc_3d_coord_vertical)
+
+        # Get pointcloud in image coordinates
+        pc_image_coord = self.project_pc_to_image(pc_3d_coord_fpointnet)
+        # print_projection_cv2(pc_image_coord, cv_image)
+
+        for bbox_2D in bbox_2D_list:
+            # Get the 3D points inside the 2D bounding box
+            xmin, ymin, xmax, ymax = bbox_2D.xmin, bbox_2D.ymin, bbox_2D.xmax, bbox_2D.ymax
+            w, h = (xmax - xmin)/2, (ymax - ymin)/2
+            cx, cy = xmin + w // 2, ymin + h//2
+
+            # Show image with projected points
+            box_fov_inds = (pc_image_coord[:, 0] < xmax) & \
+                           (pc_image_coord[:, 0] > xmin) & \
+                           (pc_image_coord[:, 1] < ymax) & \
+                           (pc_image_coord[:, 1] > ymin)
+
+            pc_in_box_fov = pc_3d_coord_fpointnet[box_fov_inds, :]
+
+            # Show image with bbox limited points
+            # cv2.rectangle(cv_image, pt1=(xmin, ymin), pt2=(xmax, ymax), color=(
+            #     0, 255, 0), thickness=3, lineType=cv2.LINE_4)
+            # print_projection_cv2(pc_image_coord[box_fov_inds, :], cv_image)
+
+            # Make sure class exists and pointcloud is not empty
+            if bbox_2D.Class not in darknet_to_pointnet.keys() or pc_in_box_fov.shape[0] <= 1:
+                continue
+
+            # Correct classes to right format
+            cls_type = darknet_to_pointnet[bbox_2D.Class]
+
+            one_hot_vec = np.zeros((3))
+            one_hot_vec[g_type2onehotclass[cls_type]] = 1
+
+            # Get frustrum angle
+            box2d_center = np.array([cx, cy])
+            uvdepth = np.zeros((1, 3))
+            uvdepth[0, 0:2] = box2d_center
+            uvdepth[0, 2] = 20  # some random depth
+
+            box2d_center_rect = self.project_image_to_rect(uvdepth)
+            frustum_angle = -1 * \
+                np.arctan2(box2d_center_rect[0, 2], box2d_center_rect[0, 0])
+            frustum_angle += np.pi / 2.0
+
+            pc_in_box_fov_rotated = rotate_pc_along_y(
+                np.copy(pc_in_box_fov), frustum_angle)
+
+            frustums.append(pc_in_box_fov_rotated[:, :3])
+
+            # Send to device
+            pc_in_box_fov_rotated = torch.tensor(
+                pc_in_box_fov_rotated, dtype=torch.float32).unsqueeze(0).cuda()  # 1x4xn
+            one_hot_vec = torch.tensor(
+                one_hot_vec, dtype=torch.float32).cuda()  # 1x3
+
+            # Predict
+            input_data = {}
+
+            input_data['point_cloud'] = pc_in_box_fov_rotated.transpose(2, 1)
+            input_data['one_hot'] = one_hot_vec
+
+            with torch.no_grad():
+                net_out = self.model(input_data)
+
+            center = net_out['box3d_center'].numpy()[0]
+
+            angle_class = np.argmax(
+                net_out['heading_scores'].numpy())
+            angle_res = net_out['heading_residual'].numpy()[0][angle_class]
+
+            size_class = np.argmax(
+                net_out['size_scores'].numpy())
+            size_res = net_out['size_residual'].numpy()[0][size_class]
+            rot = frustum_angle
+
+            h, w, l, tx, ty, tz, ry = from_prediction_to_label_format(
+                center, angle_class, angle_res,
+                size_class, size_res, rot)
+
+            object_pts = net_out['object_points'].numpy()
+
+            predictions_list.append([tx, ty, tz, h, w, l, -ry])
+
+        # finish = time.time()
+        # print("Framerate:", 1/(finish - start))
+
+        if len(frustums) > 0:
+            frustum_msgs = self.get_frustum_msg(frustums, timestamp)
+            self.frustum_pc_pub.publish(frustum_msgs)
+
+        prediction_msgs = self.get_pred_bbox_msg(predictions_list, timestamp)
+        self.prediction_3d_pub.publish(prediction_msgs)
+
+        pc_msg = self.get_pc_msg(pc_3d_coord_fpointnet[:, :3], timestamp)
+        self.pointcloud_pub.publish(pc_msg)
+
+
+def print_projection_cv2(points, image):
+    """ project converted velodyne points into camera image """
+    hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    for i in range(points.shape[0]):
+        cv2.circle(hsv_image, (np.int32(points[i][0]), np.int32(
+            points[i][1])), 1, (0, 255, 255), -1)
+
+    image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR)
+
+    cv2.imshow('', np.copy(image))
+    cv2.waitKey(0)
+
+
+if __name__ == '__main__':
+    print("Starting frustrum pointnet subscriber node for ZED...")
+
+    sub = ZedSubscriber(MODEL_ROOT, n_classes=3)

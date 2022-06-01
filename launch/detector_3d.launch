@@ -12,10 +12,11 @@
     </include>
 
     <!-- #### Frustrum Pointnet - 3D Object Detection #### -->
-    <remap from="/bounding_box_2d_publisher" to="/darknet_ros/bounding_boxes" />
-    <remap from="/image_publisher"           to="/image_publisher" />
-    <remap from="/depth_publisher"           to="/depth_publisher" />
-    <remap from="/gt_bb_publisher_3D"        to="/gt_bb_publisher_3D" />
+    <param name="fpointnet_image_topic_sub"   value="/image_publisher" />
+    <param name="fpointnet_depth_topic_sub"   value="/depth_publisher" />
+    <param name="fpointnet_bbox_2d_topic_sub" value="/darknet_ros/bounding_boxes" />
+    <param name="fpointnet_bbox_3d_topic_pub" value="/fpointnet_3d_prediction" />
+    <param name="fpointnet_frustum_topic_pub" value="/fpointnet_frustum_pointclouds" />
     <node name="fpointnet_subscriber" pkg="frustum_pointnet" type="kitti_sub_node" output="screen" />
 
     <!-- #### TF static transform publisher #### -->

@@ -47,5 +47,6 @@ include_directories(
 catkin_install_python(PROGRAMS 
   nodes/kitti_sub_node
   nodes/kitti_pub_node
+  nodes/zed_sub_node
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

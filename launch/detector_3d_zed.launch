@@ -4,10 +4,10 @@
     <param name="/use_sime_time" value="true"/>
 
     <!-- Preprocessing pointcloud and image -->
-    <param name="preprocessing_image_topic_sub" value="/zed2i/zed_node/left/image_rect_color" />
     <param name="preprocessing_depth_topic_sub" value="/zed2i/zed_node/point_cloud/cloud_registered" />
+    <param name="preprocessing_depth_topic_pub" value="zed2i/zed_node/preprocessed/point_cloud/cloud_registered" />
+    <param name="preprocessing_image_topic_sub" value="/zed2i/zed_node/left/image_rect_color" />
     <param name="preprocessing_image_topic_pub" value="/zed2i/zed_node/preprocessed/left/image_rect_color" />
-    <param name="preprocessing_depth_topic_pub" value="/zed2i/zed_node/preprocessed/point_cloud/cloud_registered" />
 
     <node name="ground_removal_node"  pkg="ground_removal" type="ground_removal_node" output="screen" />
 
@@ -19,12 +19,18 @@
     </include>
 
     <!-- #### Frustum Pointnet - 3D Object Detection #### -->
-    <remap from="/bounding_box_2d_publisher" to="/darknet_ros/bounding_boxes" />
-    <remap from="/gt_bb_publisher_3D"        to="/gt_bb_publisher_3D" />
-    <node name="fpointnet_subscriber" pkg="frustum_pointnet" type="kitti_sub_node" output="screen" />
+    <param name="fpointnet_image_topic_sub"   value="/zed2i/zed_node/preprocessed/left/image_rect_color" />
+    <param name="fpointnet_depth_topic_sub"   value="/zed2i/zed_node/preprocessed/point_cloud/cloud_registered" />
+    <param name="fpointnet_bbox_2d_topic_sub" value="/darknet_ros/bounding_boxes" />
+    <param name="fpointnet_bbox_3d_topic_pub" value="/fpointnet_3d_prediction" />
+    <param name="fpointnet_frustum_topic_pub" value="/fpointnet_frustum_pointclouds" />
+    <param name="fpointnet_pc_topic_pub"      value="/fpointnet_pointcloud" />
+
+    <node name="fpointnet_subscriber" pkg="frustum_pointnet" type="zed_sub_node" output="screen" />
 
     <!-- #### TF static transform publisher #### -->
-    <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0 0 0 1 map base_link 100" />
+    <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0     0     0     0     0  1.57 zed2i_left_camera_frame pointcloud_frame 100" />
+    <node pkg="tf" type="static_transform_publisher" name="link2_broadcaster" args="0     0     0     0  1.57     0 zed2i_left_camera_frame fpointnet_frame  100" />
 
     <!-- #### ZED Image Publisher #### -->
     <!-- <remap from="/image_publisher" to="/zed/zed_node/left/image_rect_color" /> -->
